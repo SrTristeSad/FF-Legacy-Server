@@ -40,18 +40,20 @@ type vec3 struct {
 }
 
 type playerState struct {
-	PlayerID  string `json:"playerId"`
-	Team      int    `json:"team"`
-	Position  vec3   `json:"position"`
-	Health    int    `json:"health"`
-	MaxHealth int    `json:"maxHealth"`
-	Alive     bool   `json:"alive"`
-	Downed    bool   `json:"downed"`
-	Kills     int    `json:"kills"`
-	Deaths    int    `json:"deaths"`
-	Revives   int    `json:"revives"`
-	Connected bool   `json:"connected"`
-	LastSeen  int64  `json:"lastSeen"`
+	PlayerID  string        `json:"playerId"`
+	Team      int           `json:"team"`
+	Position  vec3          `json:"position"`
+	Health    int           `json:"health"`
+	MaxHealth int           `json:"maxHealth"`
+	Alive     bool          `json:"alive"`
+	Downed    bool          `json:"downed"`
+	Kills     int           `json:"kills"`
+	Deaths    int           `json:"deaths"`
+	Revives   int           `json:"revives"`
+	Credits   int           `json:"credits"`
+	Loadout   combatLoadout `json:"loadout"`
+	Connected bool          `json:"connected"`
+	LastSeen  int64         `json:"lastSeen"`
 }
 
 type matchState struct {
@@ -235,6 +237,8 @@ func getOrCreateMatch(matches *sync.Map, handoff *handoffPayload) *matchState {
 			Health:    200,
 			MaxHealth: 200,
 			Alive:     true,
+			Credits:   2500,
+			Loadout:   starterCombatLoadout(),
 			LastSeen:  now,
 		}
 	}
@@ -257,6 +261,46 @@ func handleCommand(match *matchState, playerID, raw string) (string, string) {
 		return "PONG", ""
 	case "STATE":
 		return stateResponse(match), ""
+	case "CATALOG":
+		return catalogResponse(), ""
+	case "BUY":
+		if len(fields) < 2 || len(fields) > 3 {
+			return "ERR malformed_buy", ""
+		}
+		quantity := 1
+		if len(fields) == 3 {
+			parsed, err := strconv.Atoi(fields[2])
+			if err != nil {
+				return "ERR invalid_quantity", ""
+			}
+			quantity = parsed
+		}
+		result, err := buyCombatItem(match, playerID, fields[1], quantity)
+		if err != nil {
+			return "ERR " + err.Error(), ""
+		}
+		body, _ := json.Marshal(result)
+		return "OK BUY " + string(body), "EVENT BUY " + string(body)
+	case "FIRE":
+		if len(fields) != 2 {
+			return "ERR malformed_fire", ""
+		}
+		result, err := fireWeapon(match, playerID, fields[1])
+		if err != nil {
+			return "ERR " + err.Error(), ""
+		}
+		body, _ := json.Marshal(result)
+		return "OK FIRE " + string(body), "EVENT FIRE " + string(body)
+	case "USE":
+		if len(fields) != 2 {
+			return "ERR malformed_use", ""
+		}
+		result, err := useCombatItem(match, playerID, fields[1])
+		if err != nil {
+			return "ERR " + err.Error(), ""
+		}
+		body, _ := json.Marshal(result)
+		return "OK USE " + string(body), "EVENT USE " + string(body)
 	case "MOVE":
 		if len(fields) != 4 {
 			return "ERR malformed_move", ""
@@ -365,6 +409,7 @@ func applyHit(match *matchState, attackerID, targetID string, damage int) (hitRe
 	}
 
 	wasDowned := target.Downed
+	damage = applyArmorMitigationLocked(target, damage)
 	if damage > target.Health {
 		damage = target.Health
 	}
@@ -383,6 +428,7 @@ func applyHit(match *matchState, attackerID, targetID string, damage int) (hitRe
 			target.Alive = false
 			target.Deaths++
 			attacker.Kills++
+			awardKillCreditsLocked(attacker)
 			result.Health = 0
 			result.Killed = true
 		}
@@ -469,6 +515,7 @@ func evaluateRoundLocked(match *matchState) (bool, int, bool) {
 		winner = team
 	}
 	match.Score[winner]++
+	awardRoundCreditsLocked(match, winner)
 	if match.Score[winner] >= match.TargetRounds {
 		match.Status = "finished"
 		match.UpdatedAt = time.Now().UnixMilli()
