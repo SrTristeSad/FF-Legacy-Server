@@ -1,6 +1,6 @@
 import http from 'node:http';
 
-export function startHttpService({ name, port, routes = {} }) {
+export function startHttpService({ name, port, routes = {}, fallback = null }) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
@@ -15,21 +15,32 @@ export function startHttpService({ name, port, routes = {} }) {
 
     const key = `${req.method || 'GET'} ${url.pathname}`;
     const handler = routes[key];
-    if (!handler) {
-      return json(res, 404, { ok: false, error: 'not_implemented', service: name, path: url.pathname });
-    }
 
     try {
-      await handler(req, res, url);
+      if (handler) {
+        await handler(req, res, url);
+        return;
+      }
+
+      if (fallback) {
+        const handled = await fallback(req, res, url);
+        if (handled) return;
+      }
+
+      return json(res, 404, { ok: false, error: 'not_implemented', service: name, path: url.pathname });
     } catch (error) {
       const status = Number(error?.status || 500);
       const code = error?.code || (status >= 500 ? 'internal_error' : 'request_failed');
       if (status >= 500) console.error(`[${name}]`, error);
-      json(res, status, {
-        ok: false,
-        error: code,
-        ...(error?.details ? { details: error.details } : {})
-      });
+      if (!res.headersSent) {
+        json(res, status, {
+          ok: false,
+          error: code,
+          ...(error?.details ? { details: error.details } : {})
+        });
+      } else {
+        res.destroy(error);
+      }
     }
   });
 
