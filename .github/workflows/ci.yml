@@ -32,6 +32,7 @@ jobs:
           node --check scripts/smoke-rooms.mjs
           node --check scripts/smoke-match.mjs
           node --check scripts/smoke-gameplay.mjs
+          node --check scripts/smoke-revive.mjs
           node --check scripts/smoke-session.mjs
           node --check scripts/smoke-lobby.mjs
           node --check scripts/smoke-clan.mjs
