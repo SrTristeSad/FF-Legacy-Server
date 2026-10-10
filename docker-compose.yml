@@ -90,6 +90,10 @@ services:
       dockerfile: docker/match.Dockerfile
     restart: unless-stopped
     env_file: .env
+    environment:
+      ROOMS_INTERNAL_URL: http://rooms:${ROOMS_PORT:-19135}
+    depends_on:
+      - rooms
     ports:
       - "127.0.0.1:${GAME_SERVER_PORT:-10100}:${GAME_SERVER_PORT:-10100}/udp"
 
