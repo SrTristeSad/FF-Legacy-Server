@@ -22,8 +22,14 @@ export function startHttpService({ name, port, routes = {} }) {
     try {
       await handler(req, res, url);
     } catch (error) {
-      console.error(`[${name}]`, error);
-      json(res, 500, { ok: false, error: 'internal_error' });
+      const status = Number(error?.status || 500);
+      const code = error?.code || (status >= 500 ? 'internal_error' : 'request_failed');
+      if (status >= 500) console.error(`[${name}]`, error);
+      json(res, status, {
+        ok: false,
+        error: code,
+        ...(error?.details ? { details: error.details } : {})
+      });
     }
   });
 
@@ -34,17 +40,44 @@ export function startHttpService({ name, port, routes = {} }) {
   return server;
 }
 
-export async function readBody(req) {
+export async function readBody(req, maxBytes = 1024 * 1024) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let total = 0;
+
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const error = new Error('payload_too_large');
+      error.status = 413;
+      error.code = 'payload_too_large';
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+
   return Buffer.concat(chunks);
+}
+
+export async function readJson(req, maxBytes = 1024 * 1024) {
+  const body = await readBody(req, maxBytes);
+  if (!body.length) return {};
+
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
+    const error = new Error('invalid_json');
+    error.status = 400;
+    error.code = 'invalid_json';
+    throw error;
+  }
 }
 
 export function json(res, status, data) {
   const body = Buffer.from(JSON.stringify(data));
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
-    'content-length': body.length
+    'content-length': body.length,
+    'cache-control': 'no-store'
   });
   res.end(body);
 }
