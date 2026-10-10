@@ -28,19 +28,21 @@ The infrastructure is runnable and intended for a VPS managed with aaPanel:
 - aaPanel-friendly loopback HTTP bindings
 - setup/start/status/log scripts
 - room lifecycle smoke test
+- end-to-end room -> UDP match smoke test
+- GitHub Actions syntax/build validation
 
 The project is **not yet wire-compatible with Free Fire 1.70.4**. Client protocol compatibility must be implemented from clean-room observations/specifications.
 
 ## Quick start
 
 ```bash
-cp .env.example .env
+chmod +x scripts/*.sh
 ./scripts/setup.sh
 ./scripts/start.sh
 ./scripts/status.sh
 ```
 
-If `setup.sh` creates `.env`, it also generates a private match-handoff secret. Edit `PUBLIC_HOST`, database credentials and any deployment-specific values before exposing the service.
+`setup.sh` creates `.env` when needed and replaces the development handoff secret with a private random value. Edit `PUBLIC_HOST`, PostgreSQL credentials and any deployment-specific values before exposing the service.
 
 Health checks:
 
@@ -51,11 +53,14 @@ curl http://127.0.0.1:19133/health
 curl http://127.0.0.1:19135/health
 ```
 
-Rooms smoke test:
+Backend smoke tests:
 
 ```bash
 node scripts/smoke-rooms.mjs
+node scripts/smoke-match.mjs
 ```
+
+The second test verifies the full internal flow: room creation -> signed handoff -> UDP authentication -> `WELCOME <matchId>`.
 
 TCP gateway default: `8084/TCP`
 
