@@ -20,14 +20,14 @@ async function post(path, body) {
 
 const playerId = `smoke-${randomUUID()}`;
 
-console.log('[1/4] create solo room');
+console.log('[1/5] create solo room');
 const created = await post('/rooms/create', {
   playerId,
   nickname: 'SmokePlayer',
   mode: 'casual_solo'
 });
 
-console.log('[2/4] start room and obtain signed handoff');
+console.log('[2/5] start room and obtain signed handoff');
 const started = await post('/rooms/start', {
   roomId: created.room.id,
   playerId
@@ -36,7 +36,7 @@ const started = await post('/rooms/start', {
 const handoff = started.handoff;
 if (!handoff?.token || !handoff?.id) throw new Error('missing handoff');
 
-console.log('[3/4] authenticate against UDP match server');
+console.log('[3/5] authenticate against UDP match server');
 const socket = dgram.createSocket('udp4');
 const result = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => {
@@ -65,5 +65,8 @@ if (result !== `WELCOME ${handoff.id}`) {
   throw new Error(`unexpected UDP response: ${result}`);
 }
 
-console.log('[4/4] end-to-end handoff verified');
+console.log('[4/5] finish room');
+await post('/rooms/finish', { roomId: created.room.id, playerId });
+
+console.log('[5/5] end-to-end handoff verified');
 console.log('match smoke test: OK');
