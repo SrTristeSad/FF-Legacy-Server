@@ -186,7 +186,6 @@ func fireWeapon(match *matchState, attackerID, targetID string) (fireResult, err
 
 	hit, err := applyHit(match, attackerID, targetID, spec.Damage)
 	if err != nil {
-		// Invalid shots do not consume ammunition.
 		match.mu.Lock()
 		if player := match.Players[attackerID]; player != nil {
 			if player.Loadout.Ammo == nil {
@@ -237,7 +236,7 @@ func applyArmorMitigationLocked(target *playerState, incoming int) int {
 	if incoming <= 0 || target == nil || target.Loadout.VestDurability <= 0 || target.Loadout.Vest == "" {
 		return incoming
 	}
-	prevented := incoming / 5 // 20% body-damage reduction in the clean-room bootstrap model.
+	prevented := incoming / 5
 	if prevented < 1 {
 		prevented = 1
 	}
@@ -261,5 +260,8 @@ func awardRoundCreditsLocked(match *matchState, winner int) {
 		} else {
 			player.Credits += 600
 		}
+	}
+	if match.Score[winner] >= match.TargetRounds {
+		go maybeReportMatchResult(match)
 	}
 }
