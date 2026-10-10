@@ -103,6 +103,41 @@ export function updateAccount(openId, changes = {}) {
   return account;
 }
 
+export function adjustWalletByUid(uid, delta = {}) {
+  const target = Number(uid);
+  const state = loadState();
+  const account = Object.values(state.accounts).find((candidate) => Number(candidate.uid) === target);
+  if (!account) return null;
+
+  const coinsDelta = Math.trunc(Number(delta.coins || 0));
+  const gemsDelta = Math.trunc(Number(delta.gems || 0));
+  const nextCoins = Number(account.coins || 0) + coinsDelta;
+  const nextGems = Number(account.gems || 0) + gemsDelta;
+  if (nextCoins < 0) throw new Error('insufficient_coins');
+  if (nextGems < 0) throw new Error('insufficient_gems');
+
+  account.coins = nextCoins;
+  account.gems = nextGems;
+  saveState(state);
+  return account;
+}
+
+export function addProgressByUid(uid, changes = {}) {
+  const target = Number(uid);
+  const state = loadState();
+  const account = Object.values(state.accounts).find((candidate) => Number(candidate.uid) === target);
+  if (!account) return null;
+
+  account.exp = Math.max(0, Number(account.exp || 0) + Math.trunc(Number(changes.exp || 0)));
+  account.rankingPoints = Math.max(0, Number(account.rankingPoints || 0) + Math.trunc(Number(changes.rankingPoints || 0)));
+
+  // Clean-room provisional progression: one level every 1000 accumulated XP.
+  account.level = Math.max(1, Math.floor(account.exp / 1000) + 1);
+  account.rank = Math.max(1, Math.floor(account.rankingPoints / 1000) + 1);
+  saveState(state);
+  return account;
+}
+
 export function issueSession(openId, ttlSeconds = 28800) {
   const key = sanitizeOpenId(openId);
   const state = loadState();
