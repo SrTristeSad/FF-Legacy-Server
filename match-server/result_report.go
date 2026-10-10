@@ -33,6 +33,11 @@ type matchResultPayload struct {
 var reportedMatches sync.Map
 
 func maybeReportMatchResult(match *matchState) {
+	base := strings.TrimSpace(os.Getenv("ROOMS_INTERNAL_URL"))
+	if base == "" {
+		return
+	}
+
 	match.mu.Lock()
 	if match.Status != "finished" {
 		match.mu.Unlock()
@@ -77,7 +82,7 @@ func maybeReportMatchResult(match *matchState) {
 		return
 	}
 
-	base := strings.TrimRight(envOr("ROOMS_INTERNAL_URL", "http://rooms:19135"), "/")
+	base = strings.TrimRight(base, "/")
 	secret := strings.TrimSpace(os.Getenv("MATCH_RESULT_SECRET"))
 	if secret == "" {
 		secret = envOr("MATCH_HANDOFF_SECRET", "dev-change-me")
