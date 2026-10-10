@@ -172,6 +172,7 @@ func handleHello(conn *net.UDPConn, remote *net.UDPAddr, raw, secret string, ses
 	match.UpdatedAt = player.LastSeen
 	match.mu.Unlock()
 
+	evictPlayerSessions(sessions, handoff.MatchID, playerID, remote.String())
 	sessions.Store(remote.String(), clientSession{
 		PlayerID: playerID,
 		MatchID:  handoff.MatchID,
@@ -408,6 +409,20 @@ func stateResponse(match *matchState) string {
 		return "ERR state_encode_failed"
 	}
 	return "STATE " + string(body)
+}
+
+func evictPlayerSessions(sessions *sync.Map, matchID, playerID, keepRemote string) {
+	sessions.Range(func(key, value any) bool {
+		remote := key.(string)
+		if remote == keepRemote {
+			return true
+		}
+		session := value.(clientSession)
+		if session.MatchID == matchID && session.PlayerID == playerID {
+			sessions.Delete(key)
+		}
+		return true
+	})
 }
 
 func cleanupStaleSessions(sessions, matches *sync.Map) {
