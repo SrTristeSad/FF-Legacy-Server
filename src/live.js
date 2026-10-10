@@ -1,9 +1,12 @@
 import { startHttpService, json } from './http-common.js';
+import { createResourceCacheHandler, resourceCacheInfo } from './resource-cache.js';
 
 const port = Number(process.env.LIVE_PORT || 19134);
 const gameVersion = process.env.GAME_VERSION || '1.70.0';
 const publicHost = String(process.env.PUBLIC_HOST || '127.0.0.1').trim();
 const loginPort = Number(process.env.LOGIN_PORT || 19132);
+const resourceMirrorMode = String(process.env.RESOURCE_MIRROR_MODE || 'local').trim().toLowerCase();
+const resourceCache = createResourceCacheHandler();
 
 function normalizeBase(value, fallback) {
   const raw = String(value || fallback || '').trim();
@@ -24,7 +27,7 @@ const loginServerUrl = normalizeBase(
 
 const cdnUrl = normalizeBase(
   process.env.CLIENT_CDN_URL,
-  publicHttpUrl(port, 'live/ABHotUpdates/')
+  publicHttpUrl(port, 'sbt/ABHotUpdates/')
 );
 
 function empty(res, status = 200) {
@@ -50,6 +53,14 @@ function versionInfoBody() {
   return `${gameVersion}_ASTC\n${gameVersion}\n`;
 }
 
+async function hotUpdate(req, res, url, localHandler) {
+  if (resourceMirrorMode === 'mirror') {
+    return resourceCache(req, res, url);
+  }
+  localHandler();
+  return true;
+}
+
 const routes = {
   'GET /status': async (_req, res) => {
     json(res, 200, {
@@ -57,13 +68,12 @@ const routes = {
       online: true,
       gameVersion,
       loginServerUrl,
-      cdnUrl
+      cdnUrl,
+      resourceMirrorMode,
+      resourceCache: resourceCacheInfo()
     });
   },
 
-  // Legacy 1.70.x bootstrap response. The client uses server_url to move from
-  // the live/version service to the login service and cdn_url for hot-update
-  // metadata/assets.
   'GET /ver.php': async (req, res) => {
     const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
     const clientIp = forwarded || req.socket.remoteAddress || '';
@@ -87,18 +97,20 @@ const routes = {
     });
   },
 
-  // Minimal hot-update metadata for the 1.70.0 client. Keeping fileinfo empty
-  // tells the bootstrap that there are no mandatory replacement bundles hosted
-  // by this clean-room server yet.
-  'GET /sbt/ABHotUpdates/android/1.70.0/fileinfo': async (_req, res) => empty(res),
-  'GET /sbt/ABHotUpdates/android/1.70.0/versioninfo': async (_req, res) => text(res, 200, versionInfoBody()),
-  'GET /live/ABHotUpdates/android/1.70.0/fileinfo': async (_req, res) => empty(res),
-  'GET /live/ABHotUpdates/android/1.70.0/versioninfo': async (_req, res) => text(res, 200, versionInfoBody()),
+  'GET /sbt/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'GET /sbt/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => text(res, 200, versionInfoBody())),
+  'GET /live/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'GET /live/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => text(res, 200, versionInfoBody())),
 
-  'HEAD /sbt/ABHotUpdates/android/1.70.0/fileinfo': async (_req, res) => empty(res),
-  'HEAD /sbt/ABHotUpdates/android/1.70.0/versioninfo': async (_req, res) => empty(res),
-  'HEAD /live/ABHotUpdates/android/1.70.0/fileinfo': async (_req, res) => empty(res),
-  'HEAD /live/ABHotUpdates/android/1.70.0/versioninfo': async (_req, res) => empty(res)
+  'HEAD /sbt/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'HEAD /sbt/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'HEAD /live/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'HEAD /live/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res))
 };
 
-startHttpService({ name: 'live', port, routes });
+startHttpService({
+  name: 'live',
+  port,
+  routes,
+  fallback: resourceMirrorMode === 'mirror' ? resourceCache : null
+});
