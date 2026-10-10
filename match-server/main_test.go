@@ -26,13 +26,13 @@ func makeToken(t *testing.T, secret string, payload handoffPayload) string {
 func TestVerifyHandoffValid(t *testing.T) {
 	secret := "test-secret"
 	want := handoffPayload{
-		MatchID: "match-1",
-		RoomID:  "room-1",
-		Players: []string{"1001", "1002"},
-		Teams:   map[string]int{"1001": 1, "1002": 2},
-		Mode:    "clash_squad",
+		MatchID:      "match-1",
+		RoomID:       "room-1",
+		Players:      []string{"1001", "1002"},
+		Teams:        map[string]int{"1001": 1, "1002": 2},
+		Mode:         "clash_squad",
 		TargetRounds: 4,
-		Exp:     time.Now().Add(time.Minute).UnixMilli(),
+		Exp:          time.Now().Add(time.Minute).UnixMilli(),
 	}
 
 	token := makeToken(t, secret, want)
@@ -67,16 +67,37 @@ func TestVerifyHandoffRejectsTamperedSignature(t *testing.T) {
 func testMatch(targetRounds int) *matchState {
 	now := time.Now().UnixMilli()
 	return &matchState{
-		MatchID: "match-test",
-		RoomID: "room-test",
-		Mode: "clash_squad",
-		Status: "active",
-		Round: 1,
+		MatchID:      "match-test",
+		RoomID:       "room-test",
+		Mode:         "clash_squad",
+		Status:       "active",
+		Round:        1,
 		TargetRounds: targetRounds,
-		Score: map[int]int{},
+		Score:        map[int]int{},
 		Players: map[string]*playerState{
 			"a": {PlayerID: "a", Team: 1, Position: vec3{}, Health: 200, MaxHealth: 200, Alive: true, Connected: true},
 			"b": {PlayerID: "b", Team: 2, Position: vec3{X: 30}, Health: 200, MaxHealth: 200, Alive: true, Connected: true},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func squadMatch() *matchState {
+	now := time.Now().UnixMilli()
+	return &matchState{
+		MatchID:      "squad-match",
+		RoomID:       "squad-room",
+		Mode:         "clash_squad",
+		Status:       "active",
+		Round:        1,
+		TargetRounds: 4,
+		Score:        map[int]int{},
+		Players: map[string]*playerState{
+			"a1": {PlayerID: "a1", Team: 1, Position: vec3{X: 0}, Health: 200, MaxHealth: 200, Alive: true, Connected: true},
+			"a2": {PlayerID: "a2", Team: 1, Position: vec3{X: 2}, Health: 200, MaxHealth: 200, Alive: true, Connected: true},
+			"b1": {PlayerID: "b1", Team: 2, Position: vec3{X: 30}, Health: 200, MaxHealth: 200, Alive: true, Connected: true},
+			"b2": {PlayerID: "b2", Team: 2, Position: vec3{X: 32}, Health: 200, MaxHealth: 200, Alive: true, Connected: true},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -109,7 +130,7 @@ func TestKillEndsRoundAndResetsPlayers(t *testing.T) {
 	if match.Score[1] != 1 || match.Round != 2 {
 		t.Fatalf("unexpected round state score=%v round=%d", match.Score, match.Round)
 	}
-	if !match.Players["b"].Alive || match.Players["b"].Health != 200 {
+	if !match.Players["b"].Alive || match.Players["b"].Health != 200 || match.Players["b"].Downed {
 		t.Fatalf("player was not reset: %#v", match.Players["b"])
 	}
 	if match.Players["a"].Kills != 1 || match.Players["b"].Deaths != 1 {
@@ -141,5 +162,81 @@ func TestFriendlyFireDisabled(t *testing.T) {
 	match.Players["b"].Team = 1
 	if _, err := applyHit(match, "a", "b", 20); err == nil || err.Error() != "friendly_fire_disabled" {
 		t.Fatalf("expected friendly_fire_disabled, got %v", err)
+	}
+}
+
+func TestSquadHitDownsPlayerWhenTeammateStanding(t *testing.T) {
+	match := squadMatch()
+	result, err := applyHit(match, "b1", "a1", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Downed || result.Killed || result.RoundEnded {
+		t.Fatalf("expected downed without elimination: %#v", result)
+	}
+	target := match.Players["a1"]
+	if !target.Alive || !target.Downed || target.Health != 1 || target.Deaths != 0 {
+		t.Fatalf("unexpected downed state: %#v", target)
+	}
+	if match.Players["b1"].Kills != 0 || match.Score[2] != 0 || match.Round != 1 {
+		t.Fatalf("down should not score a kill/round: attacker=%#v score=%v round=%d", match.Players["b1"], match.Score, match.Round)
+	}
+	if _, err := movePlayer(match, "a1", vec3{X: 1}); err == nil || err.Error() != "player_downed" {
+		t.Fatalf("expected downed player movement rejection, got %v", err)
+	}
+}
+
+func TestReviveRestoresDownedTeammate(t *testing.T) {
+	match := squadMatch()
+	if _, err := applyHit(match, "b1", "a1", 200); err != nil {
+		t.Fatal(err)
+	}
+	result, err := revivePlayer(match, "a2", "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Health != 50 || result.ReviverID != "a2" || result.TargetID != "a1" {
+		t.Fatalf("unexpected revive result: %#v", result)
+	}
+	if match.Players["a1"].Downed || match.Players["a1"].Health != 50 || !match.Players["a1"].Alive {
+		t.Fatalf("target not revived: %#v", match.Players["a1"])
+	}
+	if match.Players["a2"].Revives != 1 {
+		t.Fatalf("revive counter not incremented: %#v", match.Players["a2"])
+	}
+}
+
+func TestReviveRejectsEnemyAndDistance(t *testing.T) {
+	match := squadMatch()
+	if _, err := applyHit(match, "b1", "a1", 200); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := revivePlayer(match, "b2", "a1"); err == nil || err.Error() != "target_not_teammate" {
+		t.Fatalf("expected enemy revive rejection, got %v", err)
+	}
+	match.Players["a2"].Position = vec3{X: 50}
+	if _, err := revivePlayer(match, "a2", "a1"); err == nil || err.Error() != "target_too_far" {
+		t.Fatalf("expected distance rejection, got %v", err)
+	}
+}
+
+func TestSecondHitEliminatesDownedPlayer(t *testing.T) {
+	match := squadMatch()
+	first, err := applyHit(match, "b1", "a1", 200)
+	if err != nil || !first.Downed {
+		t.Fatalf("first hit should down: result=%#v err=%v", first, err)
+	}
+	second, err := applyHit(match, "b1", "a1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Killed || second.Downed {
+		t.Fatalf("second hit should eliminate: %#v", second)
+	}
+	if match.Players["a1"].Alive || match.Players["a1"].Deaths != 1 || match.Players["b1"].Kills != 1 {
+		t.Fatalf("elimination counters/state wrong: target=%#v attacker=%#v", match.Players["a1"], match.Players["b1"])
+	}
+	if second.RoundEnded {
+		t.Fatal("round should continue while a2 is standing")
 	}
 }
