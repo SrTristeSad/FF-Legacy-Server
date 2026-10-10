@@ -7,15 +7,22 @@ const CATALOG = Object.freeze({
   'char.default': { type: 'character', name: 'Default Character' },
   'pet.none': { type: 'pet', name: 'No Pet' },
   'outfit.top.basic': { type: 'top', name: 'Basic Top' },
+  'outfit.top.red': { type: 'top', name: 'Red Top' },
   'outfit.bottom.basic': { type: 'bottom', name: 'Basic Bottom' },
+  'outfit.bottom.black': { type: 'bottom', name: 'Black Bottom' },
   'outfit.shoes.basic': { type: 'shoes', name: 'Basic Shoes' },
   'outfit.head.none': { type: 'head', name: 'No Headwear' },
+  'outfit.head.cap': { type: 'head', name: 'Legacy Cap' },
   'outfit.face.none': { type: 'face', name: 'No Face Item' },
   'weapon.skin.default': { type: 'weapon_skin', name: 'Default Weapon Skin' },
+  'weapon.skin.blue': { type: 'weapon_skin', name: 'Blue Weapon Skin' },
   'emote.wave': { type: 'emote', name: 'Wave' },
   'emote.hello': { type: 'emote', name: 'Hello' },
+  'emote.dance': { type: 'emote', name: 'Dance' },
   'profile.banner.default': { type: 'banner', name: 'Default Banner' },
-  'profile.avatar.default': { type: 'avatar', name: 'Default Avatar' }
+  'profile.banner.fire': { type: 'banner', name: 'Fire Banner' },
+  'profile.avatar.default': { type: 'avatar', name: 'Default Avatar' },
+  'profile.avatar.wolf': { type: 'avatar', name: 'Wolf Avatar' }
 });
 
 const STARTER_ITEMS = Object.freeze([
