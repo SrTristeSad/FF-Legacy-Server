@@ -11,6 +11,18 @@ import {
   unblockPlayer
 } from './social-store.js';
 import { listOffers, purchase, purchaseHistory } from './shop-store.js';
+import {
+  createClan,
+  disbandClan,
+  getClan,
+  getClanForMember,
+  joinClan,
+  kickClanMember,
+  leaveClan,
+  listClans,
+  setClanRole,
+  transferClanOwnership
+} from './clan-store.js';
 
 const port = Number(process.env.MAIN_PORT || 19133);
 const host = process.env.PUBLIC_HOST || '127.0.0.1';
@@ -56,7 +68,21 @@ function requestError(error, fallback = 'request_failed') {
     already_owned: 409,
     insufficient_coins: 409,
     insufficient_gems: 409,
-    player_not_found: 404
+    player_not_found: 404,
+    invalid_clan_name: 400,
+    invalid_clan_tag: 400,
+    clan_not_found: 404,
+    clan_name_taken: 409,
+    clan_tag_taken: 409,
+    already_in_clan: 409,
+    clan_full: 409,
+    not_clan_member: 409,
+    clan_management_required: 403,
+    owner_required: 403,
+    owner_must_transfer_or_disband: 409,
+    cannot_kick_owner: 409,
+    invalid_clan_role: 400,
+    cannot_change_owner_role: 409
   };
   error.status = statusByCode[code] || 400;
   error.code = code;
@@ -92,6 +118,7 @@ function socialView(uid) {
 function lobbyView(account) {
   const inventory = claimStarter(account.uid);
   const social = getSocial(account.uid);
+  const clan = getClanForMember(account.uid);
   return {
     account: accountPublicView(account),
     wallet: {
@@ -103,9 +130,12 @@ function lobbyView(account) {
       points: Number(account.rankingPoints || 0),
       showRank: true
     },
-    clan: {
-      id: Number(account.clanId || 0)
-    },
+    clan: clan ? {
+      id: clan.id,
+      name: clan.name,
+      tag: clan.tag,
+      memberCount: clan.memberCount
+    } : null,
     inventory: {
       itemCount: inventory.items.length,
       loadout: inventory.loadout
@@ -301,6 +331,101 @@ startHttpService({
         json(res, 200, { ok: true, social: socialView(account.uid) });
       } catch (error) {
         throw requestError(error, 'social_error');
+      }
+    },
+
+    'GET /clans': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      json(res, 200, { ok: true, clans: listClans() });
+    },
+
+    'GET /clan': async (req, res, url) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const clan = getClan(url.searchParams.get('id'));
+      if (!clan) return json(res, 404, { ok: false, error: 'clan_not_found' });
+      json(res, 200, { ok: true, clan });
+    },
+
+    'GET /clan/mine': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      json(res, 200, { ok: true, clan: getClanForMember(account.uid) });
+    },
+
+    'POST /clans/create': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        json(res, 201, { ok: true, clan: createClan(account.uid, body) });
+      } catch (error) {
+        throw requestError(error, 'clan_create_failed');
+      }
+    },
+
+    'POST /clans/join': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        json(res, 200, { ok: true, clan: joinClan(account.uid, body.clanId) });
+      } catch (error) {
+        throw requestError(error, 'clan_join_failed');
+      }
+    },
+
+    'POST /clans/leave': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      try {
+        json(res, 200, { ok: true, clan: leaveClan(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'clan_leave_failed');
+      }
+    },
+
+    'POST /clans/kick': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        json(res, 200, { ok: true, clan: kickClanMember(account.uid, body.targetUid) });
+      } catch (error) {
+        throw requestError(error, 'clan_kick_failed');
+      }
+    },
+
+    'POST /clans/role': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        json(res, 200, { ok: true, clan: setClanRole(account.uid, body.targetUid, body.role) });
+      } catch (error) {
+        throw requestError(error, 'clan_role_failed');
+      }
+    },
+
+    'POST /clans/transfer': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        json(res, 200, { ok: true, clan: transferClanOwnership(account.uid, body.targetUid) });
+      } catch (error) {
+        throw requestError(error, 'clan_transfer_failed');
+      }
+    },
+
+    'POST /clans/disband': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      try {
+        json(res, 200, { ok: true, result: disbandClan(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'clan_disband_failed');
       }
     }
   }
