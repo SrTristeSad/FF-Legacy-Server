@@ -23,7 +23,7 @@ The infrastructure is runnable and intended for a VPS managed with aaPanel:
 - persistent room state
 - public/private rooms and invite codes
 - room passwords
-- owner / ready / kick / leave / finish flow
+- owner / ready / kick / leave / manual finish flow
 - matchmaking queues
 - Battle Royale, Clash Squad, ranked, casual, custom and training server-side presets
 - historical/temporary presets for Lone Wolf, Lone Wolf Strike Out, Creation Workshop, Parkour and Pet Ludo
@@ -37,13 +37,21 @@ The infrastructure is runnable and intended for a VPS managed with aaPanel:
 - server-side damage, friendly-fire rejection, kills and deaths
 - Clash Squad first-to-four round score and automatic round reset
 - squad downed/revive flow with distance/team validation
+- authoritative Clash Squad combat credits
+- clean-room combat catalog with weapons, armor, ammo and medkits
+- server-authoritative weapon damage and ammo consumption
+- vest durability and damage mitigation
+- kill and round credit rewards
+- automatic match-result callback from match server to room service
+- persisted final score and per-player match statistics
+- automatic room close/player release when a match ends normally
 - Redis
 - PostgreSQL
 - Docker Compose
 - aaPanel-friendly loopback HTTP bindings
 - setup/start/status/log scripts
 - GitHub Actions syntax/build/integration validation
-- Go unit tests for handoff, movement, combat, rounds, downed and revive rules
+- Go unit tests for handoff, movement, combat, rounds, downed/revive and combat economy rules
 - integration smoke tests with multiple simultaneous UDP clients
 
 The project is **not yet wire-compatible with Free Fire 1.70.4**. The exact proprietary binary adapter is intentionally kept separate until its packet mapping is independently verified from a client we are authorized to test.
@@ -57,7 +65,7 @@ chmod +x scripts/*.sh
 ./scripts/status.sh
 ```
 
-`setup.sh` creates `.env` when needed and replaces the development handoff secret with a private random value. Edit `PUBLIC_HOST`, PostgreSQL credentials and any deployment-specific values before exposing the service.
+`setup.sh` creates `.env` when needed and replaces the development handoff/result secrets with private random values. Edit `PUBLIC_HOST`, PostgreSQL credentials and any deployment-specific values before exposing the service.
 
 Health checks:
 
@@ -84,10 +92,14 @@ It covers:
 - room create/join/ready/start/finish
 - room-to-match signed handoff
 - UDP match admission
+- combat catalog and Clash Squad purchases
+- server-authoritative weapon fire/ammo consumption
+- vest damage mitigation and durability
 - UDP reconnect and stale endpoint invalidation
 - realtime movement and peer broadcast
 - server-authoritative damage/kill/death/round state
 - a complete first-to-four 1v1 Clash Squad series
+- automatic persisted match result and room closure
 - 2v2 downed, movement restriction and teammate revive
 
 TCP gateway default: `8084/TCP`
@@ -108,7 +120,7 @@ The temporary clean-room API used while the legacy wire adapter is developed pro
 
 Authenticated main-service areas also include inventory/loadout, shop, social/friends and clans.
 
-Accounts, inventory, economy, social and clan data share the persistent `accountdata` Docker volume. Room state uses the separate `roomdata` volume.
+Accounts, inventory, economy, social and clan data share the persistent `accountdata` Docker volume. Room state and persisted match results use the separate `roomdata` volume.
 
 ## Internal realtime match protocol
 
@@ -116,14 +128,44 @@ The match server currently exposes a deliberately simple clean-room UDP contract
 
 - `HELLO <handoff-token> <player-id>`
 - `STATE`
+- `CATALOG`
+- `BUY <item-id> [quantity]`
+- `FIRE <target-player-id>`
+- `USE utility.medkit`
 - `MOVE <x> <y> <z>`
-- `HIT <target-player-id> <damage>`
+- `HIT <target-player-id> <damage>` (bootstrap/test command)
 - `REVIVE <target-player-id>`
 - `LEAVE`
 
-The match server remains authoritative for position acceptance, health, downed/alive state, kills, deaths, revives, rounds and score. This protocol is an internal development contract, not the proprietary client wire format.
+The match server remains authoritative for accepted movement, health, downed/alive state, weapon damage, ammunition, armor, combat credits, kills, deaths, revives, rounds and score. This protocol is an internal development contract, not the proprietary client wire format.
 
 See [`docs/MATCH_PROTOCOL.md`](docs/MATCH_PROTOCOL.md).
+
+## Match result lifecycle
+
+Normal completed matches no longer require the owner to call `/rooms/finish`.
+
+When the target score is reached:
+
+```text
+match server
+    ↓ signed/internal result callback
+rooms service
+    ↓
+persist final result in roomdata
+    ↓
+close room
+    ↓
+release all room members
+```
+
+The internal callback uses `MATCH_RESULT_SECRET`. Older `.env` files without that variable remain compatible because both services fall back to `MATCH_HANDOFF_SECRET` until `setup.sh` is run with the new template.
+
+Closed rooms/results can be inspected internally with:
+
+```text
+GET /rooms/get?roomId=<room-id>&includeClosed=1
+```
 
 ## Room presets
 
@@ -173,7 +215,7 @@ Legacy client / test client
    |                                      |-- shop/economy
    |                                      |-- friends/social
    |                                      |-- clans
-   |                                      `--> rooms/matchmaking
+   |                                      `--> rooms/matchmaking --> roomdata
    |                                               |
    |                                               `--> signed match handoff
    |
@@ -182,9 +224,11 @@ Legacy client / test client
                                       |-- validates handoff + membership
                                       |-- player sessions/reconnect
                                       |-- movement/state broadcast
+                                      |-- combat catalog/economy/ammo/armor
                                       |-- health/damage/kills
                                       |-- downed/revive
-                                      `-- Clash Squad rounds/score
+                                      |-- Clash Squad rounds/score
+                                      `-- result callback --> rooms --> roomdata
 
 Backend storage/services:
    |-- accountdata volume
@@ -203,14 +247,15 @@ Backend storage/services:
 6. Inventory/loadout/economy/social/clan foundation — done
 7. Realtime UDP player state/movement/combat foundation — done
 8. Clash Squad rounds, score, reconnect and revive foundation — done
-9. Match result persistence and gameplay economy/weapons — next
-10. Clean-room legacy packet mapping
-11. Login/session wire adapter
-12. Lobby/profile/inventory wire adapter
-13. TCP notification channel wire adapter
-14. Legacy matchmaking packet mapping
-15. Legacy realtime packet adapter
-16. Moderation and administration
+9. Clash Squad combat economy/weapons/ammo/armor — done
+10. Automatic match-result persistence and room release — done
+11. Clean-room legacy packet mapping — next
+12. Login/session wire adapter
+13. Lobby/profile/inventory wire adapter
+14. TCP notification channel wire adapter
+15. Legacy matchmaking packet mapping
+16. Legacy realtime packet adapter
+17. Moderation and administration
 
 ## License
 
