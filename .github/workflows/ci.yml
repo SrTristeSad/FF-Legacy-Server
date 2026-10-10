@@ -41,3 +41,44 @@ jobs:
         run: |
           cp .env.example .env
           docker compose config >/dev/null
+
+  integration:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Prepare environment
+        run: cp .env.example .env
+
+      - name: Build and start stack
+        run: docker compose up -d --build
+
+      - name: Wait for HTTP services
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:19132/health >/dev/null \
+              && curl -fsS http://127.0.0.1:19133/health >/dev/null \
+              && curl -fsS http://127.0.0.1:19135/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs --tail=200
+          exit 1
+
+      - name: Run full smoke suite
+        run: sh scripts/smoke-all.sh
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --tail=250
+
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v
