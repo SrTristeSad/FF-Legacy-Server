@@ -9,7 +9,9 @@ const allowOriginFetch = String(process.env.RESOURCE_MIRROR_MODE || 'local').tri
 
 function mapOriginPath(pathname) {
   let mapped = String(pathname || '');
-  if (mapped.startsWith('/live/ABHotUpdates/')) {
+  if (mapped.startsWith('/legacy170x/sbt/ABHotUpdates/')) {
+    mapped = `/sbt/ABHotUpdates/${mapped.slice('/legacy170x/sbt/ABHotUpdates/'.length)}`;
+  } else if (mapped.startsWith('/live/ABHotUpdates/')) {
     mapped = `/sbt/ABHotUpdates/${mapped.slice('/live/ABHotUpdates/'.length)}`;
   }
   if (!mapped.startsWith('/sbt/ABHotUpdates/')) return null;
@@ -31,9 +33,6 @@ function cacheFileFor(originPath) {
   return target;
 }
 
-// Some legacy manifests request the same logical AssetBundle with a different
-// hash suffix. The historical 1.70.x server matched by the base name before
-// the first dot, e.g. loc_pt-br.HASH_A -> loc_pt-br.HASH_B.
 function findLegacyBundleAlias(filePath) {
   if (!filePath.includes(`${path.sep}gameassetbundles${path.sep}`)) return null;
   const dir = path.dirname(filePath);
