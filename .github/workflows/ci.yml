@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check Node syntax
+        run: |
+          node --check src/http-common.js
+          node --check src/live.js
+          node --check src/login.js
+          node --check src/main.js
+          node --check src/rooms.js
+          node --check src/gateway.js
+          node --check scripts/smoke-rooms.mjs
+          node --check scripts/smoke-match.mjs
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+
+      - name: Test match server
+        working-directory: match-server
+        run: go test ./...
+
+      - name: Validate Compose file
+        run: docker compose config >/dev/null
