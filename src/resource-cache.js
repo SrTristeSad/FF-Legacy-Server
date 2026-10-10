@@ -70,7 +70,7 @@ function serveCached(req, res, filePath) {
     headers['content-length'] = String(range.end - range.start + 1);
     res.writeHead(206, headers);
     if (req.method === 'HEAD') return res.end();
-    return fs.createReadStream(filePath, range).pipe(res);
+    return fs.createReadStream(filePath, { start: range.start, end: range.end }).pipe(res);
   }
 
   headers['content-length'] = String(stat.size);
@@ -109,8 +109,7 @@ function requestOrigin(originUrl, req, res, filePath, redirects = 0) {
         return;
       }
 
-      const responseHeaders = filteredHeaders(upstream);
-      res.writeHead(status, responseHeaders);
+      res.writeHead(status, filteredHeaders(upstream));
 
       if (req.method === 'HEAD') {
         upstream.resume();
@@ -122,21 +121,18 @@ function requestOrigin(originUrl, req, res, filePath, redirects = 0) {
       const shouldCache = status === 200 && !req.headers.range;
       let tempPath = '';
       let fileStream = null;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve(true);
+      };
+
       if (shouldCache) {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         tempPath = `${filePath}.part-${process.pid}-${Date.now()}`;
         fileStream = fs.createWriteStream(tempPath);
-        upstream.pipe(fileStream);
-      }
-
-      upstream.pipe(res);
-
-      upstream.on('end', () => {
-        if (!fileStream) {
-          resolve(true);
-          return;
-        }
-        fileStream.once('close', () => {
+        fileStream.on('close', () => {
           try {
             fs.renameSync(tempPath, filePath);
             console.log(`[resources] cached ${originUrl.pathname}`);
@@ -144,11 +140,17 @@ function requestOrigin(originUrl, req, res, filePath, redirects = 0) {
             try { fs.rmSync(tempPath, { force: true }); } catch {}
             console.error('[resources] cache commit failed:', error.message);
           }
-          resolve(true);
+          finish();
         });
+        fileStream.on('error', reject);
+        upstream.pipe(fileStream);
+      }
+
+      upstream.pipe(res);
+      upstream.on('end', () => {
+        if (!fileStream) finish();
       });
       upstream.on('error', reject);
-      fileStream?.on('error', reject);
     });
 
     upstreamReq.on('error', reject);
