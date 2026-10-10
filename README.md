@@ -27,17 +27,24 @@ The infrastructure is runnable and intended for a VPS managed with aaPanel:
 - matchmaking queues
 - Battle Royale, Clash Squad, ranked, casual, custom and training server-side presets
 - historical/temporary presets for Lone Wolf, Lone Wolf Strike Out, Creation Workshop, Parkour and Pet Ludo
-- signed room-to-match handoff
+- signed room-to-match handoff with teams/mode/round metadata
 - TCP gateway
-- UDP match server
-- UDP handoff authentication
+- stateful UDP match server
+- UDP handoff authentication and player membership validation
+- UDP reconnect that replaces the player's old realtime endpoint without losing match state
+- authoritative player position, health, alive/downed state and match statistics
+- realtime movement validation and peer broadcasts
+- server-side damage, friendly-fire rejection, kills and deaths
+- Clash Squad first-to-four round score and automatic round reset
+- squad downed/revive flow with distance/team validation
 - Redis
 - PostgreSQL
 - Docker Compose
 - aaPanel-friendly loopback HTTP bindings
 - setup/start/status/log scripts
 - GitHub Actions syntax/build/integration validation
-- Go tests for handoff verification
+- Go unit tests for handoff, movement, combat, rounds, downed and revive rules
+- integration smoke tests with multiple simultaneous UDP clients
 
 The project is **not yet wire-compatible with Free Fire 1.70.4**. The exact proprietary binary adapter is intentionally kept separate until its packet mapping is independently verified from a client we are authorized to test.
 
@@ -77,6 +84,11 @@ It covers:
 - room create/join/ready/start/finish
 - room-to-match signed handoff
 - UDP match admission
+- UDP reconnect and stale endpoint invalidation
+- realtime movement and peer broadcast
+- server-authoritative damage/kill/death/round state
+- a complete first-to-four 1v1 Clash Squad series
+- 2v2 downed, movement restriction and teammate revive
 
 TCP gateway default: `8084/TCP`
 
@@ -97,6 +109,21 @@ The temporary clean-room API used while the legacy wire adapter is developed pro
 Authenticated main-service areas also include inventory/loadout, shop, social/friends and clans.
 
 Accounts, inventory, economy, social and clan data share the persistent `accountdata` Docker volume. Room state uses the separate `roomdata` volume.
+
+## Internal realtime match protocol
+
+The match server currently exposes a deliberately simple clean-room UDP contract for automated tests and backend development:
+
+- `HELLO <handoff-token> <player-id>`
+- `STATE`
+- `MOVE <x> <y> <z>`
+- `HIT <target-player-id> <damage>`
+- `REVIVE <target-player-id>`
+- `LEAVE`
+
+The match server remains authoritative for position acceptance, health, downed/alive state, kills, deaths, revives, rounds and score. This protocol is an internal development contract, not the proprietary client wire format.
+
+See [`docs/MATCH_PROTOCOL.md`](docs/MATCH_PROTOCOL.md).
 
 ## Room presets
 
@@ -151,7 +178,13 @@ Legacy client / test client
    |                                               `--> signed match handoff
    |
    |-- TCP ---------------------> gateway :8084 --> validates session in accountdata
-   `-- UDP ---------------------> match   :10100 --> validates handoff + membership
+   `-- UDP ---------------------> match   :10100
+                                      |-- validates handoff + membership
+                                      |-- player sessions/reconnect
+                                      |-- movement/state broadcast
+                                      |-- health/damage/kills
+                                      |-- downed/revive
+                                      `-- Clash Squad rounds/score
 
 Backend storage/services:
    |-- accountdata volume
@@ -168,14 +201,16 @@ Backend storage/services:
 4. Signed match handoff and UDP admission — done
 5. Persistent account/session/lobby foundation — done
 6. Inventory/loadout/economy/social/clan foundation — done
-7. Clean-room legacy packet mapping — next
-8. Login/session wire adapter
-9. Lobby/profile/inventory wire adapter
-10. TCP notification channel wire adapter
-11. Legacy matchmaking packet mapping
-12. UDP realtime movement/combat protocol
-13. Clash Squad gameplay state
-14. Moderation and administration
+7. Realtime UDP player state/movement/combat foundation — done
+8. Clash Squad rounds, score, reconnect and revive foundation — done
+9. Match result persistence and gameplay economy/weapons — next
+10. Clean-room legacy packet mapping
+11. Login/session wire adapter
+12. Lobby/profile/inventory wire adapter
+13. TCP notification channel wire adapter
+14. Legacy matchmaking packet mapping
+15. Legacy realtime packet adapter
+16. Moderation and administration
 
 ## License
 
