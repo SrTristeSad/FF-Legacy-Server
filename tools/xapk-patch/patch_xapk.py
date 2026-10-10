@@ -131,6 +131,7 @@ def patch_apk(apk_bytes: bytes, work: Path, zipalign: Path, apksigner: Path, key
 def replace_zip_entry(zip_path: Path, entry_name: str, replacement: Path):
     # `zip -d` and `zip -0` preserve every large untouched XAPK member (notably OBB data),
     # avoiding a 600+ MB decompress/recompress cycle.
+    zip_path = zip_path.resolve()
     run("zip", "-d", zip_path, entry_name)
     staging = zip_path.parent / "replace-entry"
     target = staging / entry_name
@@ -141,6 +142,7 @@ def replace_zip_entry(zip_path: Path, entry_name: str, replacement: Path):
 
 
 def update_xapk_manifest(xapk_path: Path):
+    xapk_path = xapk_path.resolve()
     with zipfile.ZipFile(xapk_path, "r") as z:
         if "manifest.json" not in z.namelist():
             return
