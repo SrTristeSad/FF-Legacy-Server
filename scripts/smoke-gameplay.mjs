@@ -60,9 +60,10 @@ const opponentId = `game-opponent-${randomUUID()}`;
 let roomId = '';
 let ownerSocket;
 let opponentSocket;
+let reconnectSocket;
 
 try {
-  console.log('[1/10] create 1v1 Clash Squad room');
+  console.log('[1/11] create 1v1 Clash Squad room');
   const created = await post('/rooms/create', {
     playerId: ownerId,
     nickname: 'GameplayOwner',
@@ -71,7 +72,7 @@ try {
   });
   roomId = created.room.id;
 
-  console.log('[2/10] join opponent and ready');
+  console.log('[2/11] join opponent and ready');
   await post('/rooms/join', {
     roomId,
     playerId: opponentId,
@@ -79,7 +80,7 @@ try {
   });
   await post('/rooms/ready', { roomId, playerId: opponentId, ready: true });
 
-  console.log('[3/10] start room and obtain handoff');
+  console.log('[3/11] start room and obtain handoff');
   const started = await post('/rooms/start', { roomId, playerId: ownerId });
   const handoff = started.handoff;
   if (!handoff?.token || !handoff?.id) throw new Error('handoff missing');
@@ -87,24 +88,26 @@ try {
   ownerSocket = await makeSocket();
   opponentSocket = await makeSocket();
 
-  console.log('[4/10] authenticate both UDP clients');
-  const welcomeA = await udpRequest(
-    ownerSocket,
-    `HELLO ${handoff.token} ${ownerId}\n`,
-    (text) => text.startsWith('WELCOME ')
-  );
+  console.log('[4/11] authenticate both UDP clients');
+  const welcomeA = await udpRequest(ownerSocket, `HELLO ${handoff.token} ${ownerId}\n`, (text) => text.startsWith('WELCOME '));
   if (welcomeA !== `WELCOME ${handoff.id}`) throw new Error(`owner welcome mismatch: ${welcomeA}`);
 
   const joinEvent = udpWait(ownerSocket, (text) => text === `EVENT JOIN ${opponentId}`, 'opponent join event');
-  const welcomeB = await udpRequest(
-    opponentSocket,
-    `HELLO ${handoff.token} ${opponentId}\n`,
-    (text) => text.startsWith('WELCOME ')
-  );
+  const welcomeB = await udpRequest(opponentSocket, `HELLO ${handoff.token} ${opponentId}\n`, (text) => text.startsWith('WELCOME '));
   if (welcomeB !== `WELCOME ${handoff.id}`) throw new Error(`opponent welcome mismatch: ${welcomeB}`);
   await joinEvent;
 
-  console.log('[5/10] verify initial match state and opposing teams');
+  console.log('[5/11] reconnect owner and invalidate old socket');
+  reconnectSocket = await makeSocket();
+  const rewelcome = await udpRequest(reconnectSocket, `HELLO ${handoff.token} ${ownerId}\n`, (text) => text.startsWith('WELCOME '));
+  if (rewelcome !== `WELCOME ${handoff.id}`) throw new Error(`reconnect welcome mismatch: ${rewelcome}`);
+  const oldSocketReply = await udpRequest(ownerSocket, 'STATE\n', (text) => text.startsWith('ERR '));
+  if (oldSocketReply !== 'ERR authentication_required') throw new Error(`old socket remained authenticated: ${oldSocketReply}`);
+  ownerSocket.close();
+  ownerSocket = reconnectSocket;
+  reconnectSocket = undefined;
+
+  console.log('[6/11] verify initial match state and opposing teams');
   const stateText = await udpRequest(ownerSocket, 'STATE\n', (text) => text.startsWith('STATE '));
   const initial = parseJsonReply(stateText, 'STATE ');
   const owner = initial.players?.[ownerId];
@@ -114,29 +117,17 @@ try {
   if (initial.round !== 1 || initial.status !== 'active') throw new Error('initial round state invalid');
   if (initial.targetRounds !== 4) throw new Error(`expected first-to-4 series, got ${initial.targetRounds}`);
 
-  console.log('[6/10] move owner and verify peer broadcast');
-  const moveEventPromise = udpWait(
-    opponentSocket,
-    (text) => text.startsWith(`EVENT MOVE ${ownerId} `),
-    'move broadcast'
-  );
+  console.log('[7/11] move owner and verify peer broadcast');
+  const moveEventPromise = udpWait(opponentSocket, (text) => text.startsWith(`EVENT MOVE ${ownerId} `), 'move broadcast');
   const moveText = await udpRequest(ownerSocket, 'MOVE 5 0 3\n', (text) => text.startsWith('OK MOVE '));
   const moved = parseJsonReply(moveText, `OK MOVE ${ownerId} `);
   if (moved.x !== 5 || moved.z !== 3) throw new Error(`move not applied: ${moveText}`);
   await moveEventPromise;
 
-  console.log('[7/10] play four winning rounds and verify hit broadcasts');
+  console.log('[8/11] play four winning rounds and verify hit broadcasts');
   for (let round = 1; round <= 4; round += 1) {
-    const hitEventPromise = udpWait(
-      opponentSocket,
-      (text) => text.startsWith('EVENT HIT '),
-      `hit broadcast round ${round}`
-    );
-    const hitText = await udpRequest(
-      ownerSocket,
-      `HIT ${opponentId} 200\n`,
-      (text) => text.startsWith('OK HIT ')
-    );
+    const hitEventPromise = udpWait(opponentSocket, (text) => text.startsWith('EVENT HIT '), `hit broadcast round ${round}`);
+    const hitText = await udpRequest(ownerSocket, `HIT ${opponentId} 200\n`, (text) => text.startsWith('OK HIT '));
     const hit = parseJsonReply(hitText, 'OK HIT ');
     if (!hit.killed || !hit.roundEnded) throw new Error(`round ${round} did not end: ${hitText}`);
     if (round < 4 && hit.matchEnded) throw new Error(`match ended too early on round ${round}`);
@@ -144,7 +135,7 @@ try {
     await hitEventPromise;
   }
 
-  console.log('[8/10] verify final match state');
+  console.log('[9/11] verify final match state');
   const finalText = await udpRequest(ownerSocket, 'STATE\n', (text) => text.startsWith('STATE '));
   const finalState = parseJsonReply(finalText, 'STATE ');
   if (finalState.status !== 'finished') throw new Error(`match not finished: ${finalText}`);
@@ -153,16 +144,17 @@ try {
     throw new Error(`kill/death counters invalid: ${finalText}`);
   }
 
-  console.log('[9/10] reject gameplay after match finish');
+  console.log('[10/11] reject gameplay after match finish');
   const rejectedMove = await udpRequest(ownerSocket, 'MOVE 6 0 3\n', (text) => text.startsWith('ERR '));
   if (rejectedMove !== 'ERR match_not_active') throw new Error(`unexpected post-match reply: ${rejectedMove}`);
 
-  console.log('[10/10] close room');
+  console.log('[11/11] close room');
   await post('/rooms/finish', { roomId, playerId: ownerId });
   console.log('gameplay smoke test: OK');
 } finally {
   ownerSocket?.close();
   opponentSocket?.close();
+  reconnectSocket?.close();
   if (roomId) {
     try { await post('/rooms/finish', { roomId, playerId: ownerId }); } catch {}
   }
