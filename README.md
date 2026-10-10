@@ -15,9 +15,10 @@ The infrastructure is runnable and intended for a VPS managed with aaPanel:
 - persistent room state
 - public/private rooms and invite codes
 - room passwords
-- owner / ready / kick / leave flow
+- owner / ready / kick / leave / finish flow
 - matchmaking queues
-- Clash Squad, ranked, casual, custom and training server-side presets
+- Battle Royale, Clash Squad, ranked, casual, custom and training server-side presets
+- historical/temporary presets for Lone Wolf, Lone Wolf Strike Out, Creation Workshop, Parkour and Pet Ludo
 - signed room-to-match handoff
 - TCP gateway
 - UDP match server
@@ -27,9 +28,10 @@ The infrastructure is runnable and intended for a VPS managed with aaPanel:
 - Docker Compose
 - aaPanel-friendly loopback HTTP bindings
 - setup/start/status/log scripts
-- room lifecycle smoke test
+- repeatable room lifecycle smoke test
 - end-to-end room -> UDP match smoke test
 - GitHub Actions syntax/build validation
+- Go tests for handoff verification
 
 The project is **not yet wire-compatible with Free Fire 1.70.4**. Client protocol compatibility must be implemented from clean-room observations/specifications.
 
@@ -60,7 +62,7 @@ node scripts/smoke-rooms.mjs
 node scripts/smoke-match.mjs
 ```
 
-The second test verifies the full internal flow: room creation -> signed handoff -> UDP authentication -> `WELCOME <matchId>`.
+The second test verifies the full internal flow: room creation -> signed handoff -> UDP authentication -> `WELCOME <matchId>` -> room cleanup.
 
 TCP gateway default: `8084/TCP`
 
@@ -68,7 +70,7 @@ UDP match server default: `10100/UDP`
 
 ## Room presets
 
-Current clean-room server presets:
+Current clean-room server presets include:
 
 - `casual_solo`
 - `casual_duo`
@@ -78,8 +80,15 @@ Current clean-room server presets:
 - `ranked_squad`
 - `clash_squad`
 - `clash_squad_ranked`
+- `lone_wolf`
+- `lone_wolf_strikeout`
+- `creation_workshop`
+- `parkour`
+- `pet_ludo`
 - `custom`
 - `training`
+
+The historical/temporary presets are modeled from the 2022-era feature set and remain provisional until the exact 1.70.4 packet/config mapping is independently verified.
 
 See [`docs/ROOMS_API.md`](docs/ROOMS_API.md) for the internal API.
 
@@ -121,15 +130,16 @@ Backend storage/services:
 
 1. Infrastructure and service lifecycle — done
 2. Room/matchmaking foundation — done
-3. Signed match handoff and UDP admission — done
-4. Clean-room legacy protocol documentation — next
-5. Login/session wire compatibility
-6. Lobby/profile/inventory wire compatibility
-7. TCP notification channel compatibility
-8. Legacy matchmaking packet mapping
-9. UDP realtime movement/combat protocol
-10. Clash Squad gameplay state
-11. Persistence, moderation and administration
+3. Historical room preset catalog — done
+4. Signed match handoff and UDP admission — done
+5. Clean-room legacy protocol documentation — next
+6. Login/session wire compatibility
+7. Lobby/profile/inventory wire compatibility
+8. TCP notification channel compatibility
+9. Legacy matchmaking packet mapping
+10. UDP realtime movement/combat protocol
+11. Clash Squad gameplay state
+12. Persistence, moderation and administration
 
 ## License
 
