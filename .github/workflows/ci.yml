@@ -29,6 +29,7 @@ jobs:
           node --check src/mode-presets.js
           node --check src/rooms.js
           node --check src/gateway.js
+          node --check scripts/smoke-live.mjs
           node --check scripts/smoke-rooms.mjs
           node --check scripts/smoke-match.mjs
           node --check scripts/smoke-economy.mjs
@@ -70,7 +71,8 @@ jobs:
       - name: Wait for HTTP services
         run: |
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:19132/health >/dev/null \
+            if curl -fsS http://127.0.0.1:19134/health >/dev/null \
+              && curl -fsS http://127.0.0.1:19132/health >/dev/null \
               && curl -fsS http://127.0.0.1:19133/health >/dev/null \
               && curl -fsS http://127.0.0.1:19135/health >/dev/null; then
               exit 0
