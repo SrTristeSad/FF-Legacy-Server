@@ -389,10 +389,12 @@ func evaluateRoundLocked(match *matchState) (bool, int, bool) {
 	}
 
 	match.Round++
-	for index, player := range match.Players {
+	spawnIndex := 0
+	for _, player := range match.Players {
 		player.Health = player.MaxHealth
 		player.Alive = true
-		player.Position = spawnForTeam(player.Team, index)
+		player.Position = spawnForTeam(player.Team, spawnIndex)
+		spawnIndex++
 	}
 	match.UpdatedAt = time.Now().UnixMilli()
 	return true, winner, false
