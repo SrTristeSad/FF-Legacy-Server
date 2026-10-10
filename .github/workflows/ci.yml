@@ -22,6 +22,7 @@ jobs:
           node --check src/inventory-store.js
           node --check src/social-store.js
           node --check src/shop-store.js
+          node --check src/clan-store.js
           node --check src/live.js
           node --check src/login.js
           node --check src/main.js
@@ -32,6 +33,7 @@ jobs:
           node --check scripts/smoke-match.mjs
           node --check scripts/smoke-session.mjs
           node --check scripts/smoke-lobby.mjs
+          node --check scripts/smoke-clan.mjs
 
       - uses: actions/setup-go@v5
         with:
