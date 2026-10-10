@@ -10,6 +10,7 @@ import {
   sendFriendRequest,
   unblockPlayer
 } from './social-store.js';
+import { listOffers, purchase, purchaseHistory } from './shop-store.js';
 
 const port = Number(process.env.MAIN_PORT || 19133);
 const host = process.env.PUBLIC_HOST || '127.0.0.1';
@@ -50,7 +51,12 @@ function requestError(error, fallback = 'request_failed') {
     cannot_friend_self: 400,
     cannot_block_self: 400,
     friendship_blocked: 409,
-    friend_request_not_found: 404
+    friend_request_not_found: 404,
+    offer_not_found: 404,
+    already_owned: 409,
+    insufficient_coins: 409,
+    insufficient_gems: 409,
+    player_not_found: 404
   };
   error.status = statusByCode[code] || 400;
   error.code = code;
@@ -107,6 +113,9 @@ function lobbyView(account) {
     social: {
       friendCount: social.friends.length,
       pendingRequests: social.incoming.length
+    },
+    shop: {
+      offerCount: listOffers().length
     },
     queue: {
       position: 0,
@@ -186,6 +195,32 @@ startHttpService({
       if (!account) return;
       const inventory = getInventory(account.uid);
       json(res, 200, { ok: true, loadout: inventory.loadout });
+    },
+
+    'GET /shop': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      json(res, 200, { ok: true, offers: listOffers() });
+    },
+
+    'POST /shop/purchase': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        json(res, 200, { ok: true, ...purchase(account.uid, body.offerId) });
+      } catch (error) {
+        throw requestError(error, 'purchase_failed');
+      }
+    },
+
+    'GET /shop/history': async (req, res, url) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      json(res, 200, {
+        ok: true,
+        receipts: purchaseHistory(account.uid, url.searchParams.get('limit') || 50)
+      });
     },
 
     'GET /social': async (req, res) => {
