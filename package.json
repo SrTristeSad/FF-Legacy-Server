@@ -11,6 +11,7 @@
     "login": "node src/login.js",
     "main": "node src/main.js",
     "rooms": "node src/rooms.js",
-    "gateway": "node src/gateway.js"
+    "gateway": "node src/gateway.js",
+    "smoke:rooms": "node scripts/smoke-rooms.mjs"
   }
 }
