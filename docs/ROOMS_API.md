@@ -6,6 +6,8 @@ Default local address: `http://127.0.0.1:19135`
 
 ## Supported room presets
 
+Core presets:
+
 - `casual_solo`
 - `casual_duo`
 - `casual_squad`
@@ -17,7 +19,17 @@ Default local address: `http://127.0.0.1:19135`
 - `custom`
 - `training`
 
-These are server-side presets and do not claim exact wire compatibility with a particular proprietary client build.
+Historical/temporary presets currently represented in the clean-room backend:
+
+- `lone_wolf`
+- `lone_wolf_strikeout`
+- `creation_workshop`
+- `parkour`
+- `pet_ludo`
+
+The temporary/historical presets model known game modes from the same general 2022-era branch, but they do not claim exact wire compatibility with a particular proprietary client build until the 1.70.4 client mapping is independently verified.
+
+`lone_wolf_strikeout` is modeled for eight players. `creation_workshop` is capped at 12 players and carries metadata for up to 12 teams with a maximum team size of six; the future protocol adapter will map the exact client configuration into this generic representation.
 
 ## Endpoints
 
@@ -95,6 +107,17 @@ A room can also be joined with its short `code` instead of `roomId`.
 
 A successful start returns a match handoff containing the public UDP host, UDP port, match id, expiry and a signed token. The token format is currently internal to this project and will later be mapped to the independently documented legacy protocol.
 
+`POST /rooms/finish`
+
+```json
+{
+  "roomId": "room-uuid",
+  "playerId": "1001"
+}
+```
+
+The room owner finishes the match, the room is closed, and every member is released so they can join another room or matchmaking queue.
+
 ## Matchmaking queue
 
 `POST /queue/join`
@@ -123,12 +146,13 @@ When enough players for the preset have queued, the service creates a room, assi
 
 Room and queue state is stored in `/data/rooms.json` inside the rooms container. Docker Compose mounts the `roomdata` volume at `/data`, so container recreation does not erase room state.
 
-## Smoke test
+## Smoke tests
 
 With the stack running:
 
 ```bash
 node scripts/smoke-rooms.mjs
+node scripts/smoke-match.mjs
 ```
 
-The test covers room creation, join, ready and match handoff generation.
+The first test covers room creation, join, ready, mode catalog, match handoff and room cleanup. The second test verifies the signed handoff against the UDP match server and then closes the room.
