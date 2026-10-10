@@ -21,6 +21,7 @@ jobs:
           node --check src/account-store.js
           node --check src/inventory-store.js
           node --check src/social-store.js
+          node --check src/shop-store.js
           node --check src/live.js
           node --check src/login.js
           node --check src/main.js
