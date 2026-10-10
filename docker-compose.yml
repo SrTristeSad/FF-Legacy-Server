@@ -35,6 +35,10 @@ services:
     command: ["node", "src/login.js"]
     restart: unless-stopped
     env_file: .env
+    environment:
+      ACCOUNT_DATA_FILE: /account-data/accounts.json
+    volumes:
+      - accountdata:/account-data
     ports:
       - "127.0.0.1:${LOGIN_PORT:-19132}:${LOGIN_PORT:-19132}"
 
@@ -45,6 +49,10 @@ services:
     command: ["node", "src/main.js"]
     restart: unless-stopped
     env_file: .env
+    environment:
+      ACCOUNT_DATA_FILE: /account-data/accounts.json
+    volumes:
+      - accountdata:/account-data
     ports:
       - "127.0.0.1:${MAIN_PORT:-19133}:${MAIN_PORT:-19133}"
 
@@ -69,6 +77,10 @@ services:
     command: ["node", "src/gateway.js"]
     restart: unless-stopped
     env_file: .env
+    environment:
+      ACCOUNT_DATA_FILE: /account-data/accounts.json
+    volumes:
+      - accountdata:/account-data
     ports:
       - "127.0.0.1:${TCP_PORT:-8084}:${TCP_PORT:-8084}/tcp"
 
@@ -85,3 +97,4 @@ volumes:
   redisdata:
   pgdata:
   roomdata:
+  accountdata:
