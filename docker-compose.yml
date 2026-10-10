@@ -1,0 +1,72 @@
+name: ff-legacy-server
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ff}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-fflegacy}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  live:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    command: ["node", "src/live.js"]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${LIVE_PORT:-19134}:${LIVE_PORT:-19134}"
+
+  login:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    command: ["node", "src/login.js"]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${LOGIN_PORT:-19132}:${LOGIN_PORT:-19132}"
+
+  main:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    command: ["node", "src/main.js"]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${MAIN_PORT:-19133}:${MAIN_PORT:-19133}"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    command: ["node", "src/gateway.js"]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${TCP_PORT:-8084}:${TCP_PORT:-8084}/tcp"
+
+  match:
+    build:
+      context: .
+      dockerfile: docker/match.Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${GAME_SERVER_PORT:-10100}:${GAME_SERVER_PORT:-10100}/udp"
+
+volumes:
+  redisdata:
+  pgdata:
