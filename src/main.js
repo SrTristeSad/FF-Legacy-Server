@@ -1,6 +1,15 @@
 import { startHttpService, json, readJson } from './http-common.js';
-import { accountPublicView, getAccountByToken } from './account-store.js';
+import { accountPublicView, getAccountByToken, getAccountByUid } from './account-store.js';
 import { claimStarter, getCatalog, getInventory, updateLoadout } from './inventory-store.js';
+import {
+  acceptFriendRequest,
+  blockPlayer,
+  getSocial,
+  rejectFriendRequest,
+  removeFriend,
+  sendFriendRequest,
+  unblockPlayer
+} from './social-store.js';
 
 const port = Number(process.env.MAIN_PORT || 19133);
 const host = process.env.PUBLIC_HOST || '127.0.0.1';
@@ -31,21 +40,52 @@ function requireAccount(req, res) {
   return account;
 }
 
-function mapInventoryError(error) {
-  const code = String(error?.message || 'inventory_error');
+function requestError(error, fallback = 'request_failed') {
+  const code = String(error?.message || fallback);
   const statusByCode = {
     invalid_uid: 400,
     unknown_item: 404,
     wrong_item_type: 400,
-    item_not_owned: 409
+    item_not_owned: 409,
+    cannot_friend_self: 400,
+    cannot_block_self: 400,
+    friendship_blocked: 409,
+    friend_request_not_found: 404
   };
   error.status = statusByCode[code] || 400;
   error.code = code;
   return error;
 }
 
+function requireTargetAccount(targetUid) {
+  const target = getAccountByUid(targetUid);
+  if (!target) {
+    const error = new Error('player_not_found');
+    error.status = 404;
+    error.code = 'player_not_found';
+    throw error;
+  }
+  return target;
+}
+
+function socialView(uid) {
+  const social = getSocial(uid);
+  const profileFor = (targetUid) => {
+    const account = getAccountByUid(targetUid);
+    return account ? accountPublicView(account) : { uid: Number(targetUid), missing: true };
+  };
+  return {
+    friends: social.friends.map(profileFor),
+    incoming: social.incoming.map(profileFor),
+    outgoing: social.outgoing.map(profileFor),
+    blocked: social.blocked.map(profileFor),
+    updatedAt: social.updatedAt
+  };
+}
+
 function lobbyView(account) {
   const inventory = claimStarter(account.uid);
+  const social = getSocial(account.uid);
   return {
     account: accountPublicView(account),
     wallet: {
@@ -63,6 +103,10 @@ function lobbyView(account) {
     inventory: {
       itemCount: inventory.items.length,
       loadout: inventory.loadout
+    },
+    social: {
+      friendCount: social.friends.length,
+      pendingRequests: social.incoming.length
     },
     queue: {
       position: 0,
@@ -133,7 +177,7 @@ startHttpService({
         const inventory = updateLoadout(account.uid, body);
         json(res, 200, { ok: true, loadout: inventory.loadout, inventory });
       } catch (error) {
-        throw mapInventoryError(error);
+        throw requestError(error, 'inventory_error');
       }
     },
 
@@ -142,6 +186,87 @@ startHttpService({
       if (!account) return;
       const inventory = getInventory(account.uid);
       json(res, 200, { ok: true, loadout: inventory.loadout });
+    },
+
+    'GET /social': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      json(res, 200, { ok: true, social: socialView(account.uid) });
+    },
+
+    'POST /friends/request': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      requireTargetAccount(body.targetUid);
+      try {
+        sendFriendRequest(account.uid, body.targetUid);
+        json(res, 200, { ok: true, social: socialView(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'social_error');
+      }
+    },
+
+    'POST /friends/accept': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      requireTargetAccount(body.fromUid);
+      try {
+        acceptFriendRequest(account.uid, body.fromUid);
+        json(res, 200, { ok: true, social: socialView(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'social_error');
+      }
+    },
+
+    'POST /friends/reject': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        rejectFriendRequest(account.uid, body.fromUid);
+        json(res, 200, { ok: true, social: socialView(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'social_error');
+      }
+    },
+
+    'POST /friends/remove': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        removeFriend(account.uid, body.targetUid);
+        json(res, 200, { ok: true, social: socialView(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'social_error');
+      }
+    },
+
+    'POST /social/block': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      requireTargetAccount(body.targetUid);
+      try {
+        blockPlayer(account.uid, body.targetUid);
+        json(res, 200, { ok: true, social: socialView(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'social_error');
+      }
+    },
+
+    'POST /social/unblock': async (req, res) => {
+      const account = requireAccount(req, res);
+      if (!account) return;
+      const body = await readJson(req);
+      try {
+        unblockPlayer(account.uid, body.targetUid);
+        json(res, 200, { ok: true, social: socialView(account.uid) });
+      } catch (error) {
+        throw requestError(error, 'social_error');
+      }
     }
   }
 });
