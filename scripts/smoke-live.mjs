@@ -25,16 +25,24 @@ if (!String(versionJson.cdn_url || '').includes('ABHotUpdates')) {
   throw new Error(`ver.php missing cdn_url: ${version.body}`);
 }
 
-console.log('[live 3/4] versioninfo');
-const versionInfo = await get('/sbt/ABHotUpdates/android/1.70.0/versioninfo');
-if (!versionInfo.body.includes('1.70.0')) {
-  throw new Error(`unexpected versioninfo: ${JSON.stringify(versionInfo.body)}`);
-}
+if (statusJson.resourceMirrorMode === 'mirror') {
+  console.log('[live 3/4] resource mirror configured');
+  if (!statusJson.resourceCache?.cacheRoot || !statusJson.resourceCache?.origin) {
+    throw new Error(`resource mirror status incomplete: ${status.body}`);
+  }
+  console.log('[live 4/4] external resource fetch skipped by smoke test');
+} else {
+  console.log('[live 3/4] versioninfo');
+  const versionInfo = await get('/sbt/ABHotUpdates/android/1.70.0/versioninfo');
+  if (!versionInfo.body.includes('1.70.0')) {
+    throw new Error(`unexpected versioninfo: ${JSON.stringify(versionInfo.body)}`);
+  }
 
-console.log('[live 4/4] empty fileinfo');
-const fileInfo = await get('/sbt/ABHotUpdates/android/1.70.0/fileinfo');
-if (fileInfo.body.length !== 0) {
-  throw new Error(`fileinfo should be empty, got ${fileInfo.body.length} bytes`);
+  console.log('[live 4/4] empty fileinfo');
+  const fileInfo = await get('/sbt/ABHotUpdates/android/1.70.0/fileinfo');
+  if (fileInfo.body.length !== 0) {
+    throw new Error(`fileinfo should be empty, got ${fileInfo.body.length} bytes`);
+  }
 }
 
 console.log('live bootstrap smoke test: OK');
