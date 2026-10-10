@@ -114,5 +114,5 @@ startHttpService({
   name: 'live',
   port,
   routes,
-  fallback: resourceMirrorMode === 'mirror' ? resourceCache : null
+  fallback: resourceCache
 });
