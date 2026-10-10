@@ -1,0 +1,10 @@
+# FF Legacy 1.70.0 - central server/API config
+# Copy this file into the APK at: assets/fflegacy/server.txt
+# Edit only these addresses, then rebuild/sign the APK.
+
+BOOTSTRAP=http://127.0.0.1:19134
+LIVE=http://127.0.0.1:19134
+LOGIN=http://127.0.0.1:19132
+MAIN=http://127.0.0.1:19133
+GATEWAY=127.0.0.1:8084
+MATCH=127.0.0.1:10100
