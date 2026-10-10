@@ -7,6 +7,7 @@ const publicHost = String(process.env.PUBLIC_HOST || '127.0.0.1').trim();
 const loginPort = Number(process.env.LOGIN_PORT || 19132);
 const resourceMirrorMode = String(process.env.RESOURCE_MIRROR_MODE || 'local').trim().toLowerCase();
 const resourceCache = createResourceCacheHandler();
+const remoteOptionVersion = String(process.env.REMOTE_OPTION_VERSION || 'optionaltrainingres:2').trim();
 
 function normalizeBase(value, fallback) {
   const raw = String(value || fallback || '').trim();
@@ -69,6 +70,7 @@ const routes = {
       gameVersion,
       loginServerUrl,
       cdnUrl,
+      remoteOptionVersion,
       resourceMirrorMode,
       resourceCache: resourceCacheInfo()
     });
@@ -91,7 +93,7 @@ const routes = {
       is_server_open: true,
       maintenance_announcement: '',
       maintenance_region: '',
-      remote_option_version: process.env.REMOTE_OPTION_VERSION || '',
+      remote_option_version: remoteOptionVersion,
       remote_version: gameVersion,
       server_url: loginServerUrl
     });
