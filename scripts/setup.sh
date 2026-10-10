@@ -17,6 +17,23 @@ generate_secret() {
   fi
 }
 
+ensure_env() {
+  key="$1"
+  value="$2"
+  if ! grep -q "^${key}=" .env; then
+    printf '\n%s=%s\n' "$key" "$value" >> .env
+    echo "Added ${key}"
+  fi
+}
+
+# New settings are appended to existing installs without replacing local values.
+ensure_env ADMIN_PORT 19136
+ensure_env ADMIN_BIND_HOST 127.0.0.1
+ensure_env ADMIN_USER admin
+ensure_env ADMIN_PASSWORD dev-change-me-admin
+ensure_env RESOURCE_MIRROR_MODE local
+ensure_env RESOURCE_CACHE_DIR /resource-cache
+
 if grep -q '^MATCH_HANDOFF_SECRET=dev-change-me$' .env; then
   secret="$(generate_secret handoff)"
   sed -i "s/^MATCH_HANDOFF_SECRET=dev-change-me$/MATCH_HANDOFF_SECRET=${secret}/" .env
