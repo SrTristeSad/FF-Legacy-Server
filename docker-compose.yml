@@ -25,6 +25,8 @@ services:
     command: ["node", "src/live.js"]
     restart: unless-stopped
     env_file: .env
+    volumes:
+      - resourcecache:/resource-cache
     ports:
       - "${BIND_HOST:-127.0.0.1}:${LIVE_PORT:-19134}:${LIVE_PORT:-19134}"
 
@@ -41,6 +43,20 @@ services:
       - accountdata:/account-data
     ports:
       - "${BIND_HOST:-127.0.0.1}:${LOGIN_PORT:-19132}:${LOGIN_PORT:-19132}"
+
+  admin:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    command: ["node", "src/admin.js"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ACCOUNT_DATA_FILE: /account-data/accounts.json
+    volumes:
+      - accountdata:/account-data
+    ports:
+      - "${ADMIN_BIND_HOST:-127.0.0.1}:${ADMIN_PORT:-19136}:${ADMIN_PORT:-19136}"
 
   main:
     build:
@@ -102,3 +118,4 @@ volumes:
   pgdata:
   roomdata:
   accountdata:
+  resourcecache:
