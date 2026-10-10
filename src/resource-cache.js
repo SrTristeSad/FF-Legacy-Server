@@ -30,6 +30,31 @@ function cacheFileFor(originPath) {
   return target;
 }
 
+// Some legacy manifests request the same logical AssetBundle with a different
+// hash suffix. The historical 1.70.x server matched by the base name before
+// the first dot, e.g. loc_pt-br.HASH_A -> loc_pt-br.HASH_B.
+function findLegacyBundleAlias(filePath) {
+  if (!filePath.includes(`${path.sep}gameassetbundles${path.sep}`)) return null;
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) return null;
+
+  const requested = path.basename(filePath);
+  const dot = requested.indexOf('.');
+  if (dot <= 0) return null;
+  const base = requested.slice(0, dot);
+
+  try {
+    const match = fs.readdirSync(dir).find((name) => {
+      if (!name.startsWith(`${base}.`)) return false;
+      const candidate = path.join(dir, name);
+      return fs.statSync(candidate).isFile();
+    });
+    return match ? path.join(dir, match) : null;
+  } catch {
+    return null;
+  }
+}
+
 function contentType(filePath) {
   const name = path.basename(filePath).toLowerCase();
   if (name === 'versioninfo' || name === 'fileinfo' || name.endsWith('.txt')) return 'text/plain; charset=utf-8';
@@ -55,14 +80,14 @@ function parseRange(header, size) {
   return { start, end: Math.min(end, size - 1) };
 }
 
-function serveCached(req, res, filePath) {
+function serveCached(req, res, filePath, cacheState = 'HIT') {
   const stat = fs.statSync(filePath);
   const range = parseRange(req.headers.range, stat.size);
   const headers = {
     'content-type': contentType(filePath),
     'accept-ranges': 'bytes',
     'cache-control': 'public, max-age=31536000, immutable',
-    'x-ff-resource-cache': 'HIT'
+    'x-ff-resource-cache': cacheState
   };
 
   if (range) {
@@ -169,6 +194,13 @@ export function createResourceCacheHandler() {
 
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       serveCached(req, res, filePath);
+      return true;
+    }
+
+    const aliasPath = findLegacyBundleAlias(filePath);
+    if (aliasPath) {
+      console.log(`[resources] ALIAS ${originPath} -> ${path.basename(aliasPath)}`);
+      serveCached(req, res, aliasPath, 'ALIAS');
       return true;
     }
 
