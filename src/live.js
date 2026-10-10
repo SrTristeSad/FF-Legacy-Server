@@ -103,11 +103,15 @@ const routes = {
   'GET /sbt/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => text(res, 200, versionInfoBody())),
   'GET /live/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
   'GET /live/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => text(res, 200, versionInfoBody())),
+  'GET /legacy170x/sbt/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'GET /legacy170x/sbt/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => text(res, 200, versionInfoBody())),
 
   'HEAD /sbt/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
   'HEAD /sbt/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
   'HEAD /live/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
-  'HEAD /live/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res))
+  'HEAD /live/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'HEAD /legacy170x/sbt/ABHotUpdates/android/1.70.0/fileinfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res)),
+  'HEAD /legacy170x/sbt/ABHotUpdates/android/1.70.0/versioninfo': async (req, res, url) => hotUpdate(req, res, url, () => empty(res))
 };
 
 startHttpService({
