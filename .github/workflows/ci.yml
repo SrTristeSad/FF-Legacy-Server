@@ -18,6 +18,7 @@ jobs:
       - name: Check Node syntax
         run: |
           node --check src/http-common.js
+          node --check src/account-store.js
           node --check src/live.js
           node --check src/login.js
           node --check src/main.js
@@ -26,6 +27,7 @@ jobs:
           node --check src/gateway.js
           node --check scripts/smoke-rooms.mjs
           node --check scripts/smoke-match.mjs
+          node --check scripts/smoke-session.mjs
 
       - uses: actions/setup-go@v5
         with:
