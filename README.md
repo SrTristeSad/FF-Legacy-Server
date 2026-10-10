@@ -11,13 +11,23 @@ The infrastructure is runnable and intended for a VPS managed with aaPanel:
 - HTTP `live` service
 - HTTP `login` service
 - HTTP `main` service
+- HTTP `rooms` service
+- persistent room state
+- public/private rooms and invite codes
+- room passwords
+- owner / ready / kick / leave flow
+- matchmaking queues
+- Clash Squad, ranked, casual, custom and training server-side presets
+- signed room-to-match handoff
 - TCP gateway
 - UDP match server
+- UDP handoff authentication
 - Redis
 - PostgreSQL
 - Docker Compose
 - aaPanel-friendly loopback HTTP bindings
-- simple setup/start/status/log scripts
+- setup/start/status/log scripts
+- room lifecycle smoke test
 
 The project is **not yet wire-compatible with Free Fire 1.70.4**. Client protocol compatibility must be implemented from clean-room observations/specifications.
 
@@ -26,9 +36,11 @@ The project is **not yet wire-compatible with Free Fire 1.70.4**. Client protoco
 ```bash
 cp .env.example .env
 ./scripts/setup.sh
-docker compose up -d --build
+./scripts/start.sh
 ./scripts/status.sh
 ```
+
+If `setup.sh` creates `.env`, it also generates a private match-handoff secret. Edit `PUBLIC_HOST`, database credentials and any deployment-specific values before exposing the service.
 
 Health checks:
 
@@ -36,21 +48,46 @@ Health checks:
 curl http://127.0.0.1:19134/health
 curl http://127.0.0.1:19132/health
 curl http://127.0.0.1:19133/health
+curl http://127.0.0.1:19135/health
+```
+
+Rooms smoke test:
+
+```bash
+node scripts/smoke-rooms.mjs
 ```
 
 TCP gateway default: `8084/TCP`
 
 UDP match server default: `10100/UDP`
 
+## Room presets
+
+Current clean-room server presets:
+
+- `casual_solo`
+- `casual_duo`
+- `casual_squad`
+- `ranked_solo`
+- `ranked_duo`
+- `ranked_squad`
+- `clash_squad`
+- `clash_squad_ranked`
+- `custom`
+- `training`
+
+See [`docs/ROOMS_API.md`](docs/ROOMS_API.md) for the internal API.
+
 ## aaPanel
 
-Use aaPanel/Nginx as the HTTPS edge and reverse-proxy these local services:
+Use aaPanel/Nginx as the HTTPS edge and reverse-proxy these local services when needed:
 
 - `live.example.com` -> `127.0.0.1:19134`
 - `login.example.com` -> `127.0.0.1:19132`
 - `main.example.com` -> `127.0.0.1:19133`
+- optional internal/API host -> `127.0.0.1:19135`
 
-The TCP gateway and UDP match port must be exposed directly by the VPS firewall.
+The TCP gateway and UDP match port are loopback-bound by default in Docker Compose. Expose them deliberately only after the VPS firewall and deployment configuration are ready.
 
 See [`docs/AAPANEL.md`](docs/AAPANEL.md).
 
@@ -59,24 +96,35 @@ See [`docs/AAPANEL.md`](docs/AAPANEL.md).
 ```text
 Legacy client
    |-- HTTP --> aaPanel/Nginx --> live/login/main
+   |                              |
+   |                              `--> rooms/matchmaking
+   |                                      |
+   |                                      `--> signed match handoff
+   |
    |-- TCP ---------------------> gateway :8084
    `-- UDP ---------------------> match   :10100
+                                      |
+                                      `--> validates handoff + player membership
 
-                      +--> Redis
-                      `--> PostgreSQL
+Backend storage/services:
+   |-- roomdata volume
+   |-- Redis
+   `-- PostgreSQL
 ```
 
 ## Development roadmap
 
-1. Infrastructure and service lifecycle
-2. Clean-room protocol documentation
-3. Login/session compatibility
-4. Lobby/profile/inventory compatibility
-5. TCP notification channel
-6. Matchmaking
-7. UDP realtime match protocol
-8. Clash Squad gameplay state
-9. Persistence and administration
+1. Infrastructure and service lifecycle — done
+2. Room/matchmaking foundation — done
+3. Signed match handoff and UDP admission — done
+4. Clean-room legacy protocol documentation — next
+5. Login/session wire compatibility
+6. Lobby/profile/inventory wire compatibility
+7. TCP notification channel compatibility
+8. Legacy matchmaking packet mapping
+9. UDP realtime movement/combat protocol
+10. Clash Squad gameplay state
+11. Persistence, moderation and administration
 
 ## License
 
