@@ -1,0 +1,102 @@
+name: Build Full FF 1.70 XAPK
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-full-xapk.yml'
+      - 'tools/xapk-patch/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-xapk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip unzip
+
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          if [ -z "$BUILD_TOOLS" ] || [ ! -x "$BUILD_TOOLS/apksigner" ] || [ ! -x "$BUILD_TOOLS/zipalign" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'build-tools;35.0.0'
+            BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          fi
+
+          echo "BUILD_TOOLS=$BUILD_TOOLS" >> "$GITHUB_ENV"
+          "$BUILD_TOOLS/apksigner" version
+          "$BUILD_TOOLS/zipalign" -h >/dev/null || true
+
+      - name: Generate build signing key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/fflegacy-debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000
+          echo "KEYSTORE=$RUNNER_TEMP/fflegacy-debug.keystore" >> "$GITHUB_ENV"
+
+      - name: Download original full XAPK from apk_base release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p input
+          gh release download apk_base \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.xapk' \
+            --dir input \
+            --clobber
+          ls -lh input
+          XAPK="$(find input -maxdepth 1 -type f -name '*.xapk' | head -n 1)"
+          test -n "$XAPK"
+          echo "SOURCE_XAPK=$XAPK" >> "$GITHUB_ENV"
+
+      - name: Patch APK inside XAPK and keep OBB/data
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p output
+          OUT='output/FF-Legacy-1.70.0-FULL-VPS-142.44.162.24.xapk'
+          python3 tools/xapk-patch/patch_xapk.py \
+            "$SOURCE_XAPK" \
+            "$OUT" \
+            --zipalign "$BUILD_TOOLS/zipalign" \
+            --apksigner "$BUILD_TOOLS/apksigner" \
+            --keystore "$KEYSTORE"
+          ls -lh "$OUT"
+          sha256sum "$OUT" | tee output/SHA256SUMS.txt
+
+      - name: Publish patched full XAPK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TAG='xapk_vps'
+          FILE='output/FF-Legacy-1.70.0-FULL-VPS-142.44.162.24.xapk'
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" output/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$FILE" output/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --title 'FF Legacy 1.70.0 Full XAPK - VPS' \
+              --notes 'Full 1.70.0 XAPK built from the apk_base release. Keeps the original OBB/data and patches only the APK hot-update endpoint for 142.44.162.24:19134.'
+          fi
