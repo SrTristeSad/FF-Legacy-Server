@@ -12,6 +12,7 @@
     "main": "node src/main.js",
     "rooms": "node src/rooms.js",
     "gateway": "node src/gateway.js",
-    "smoke:rooms": "node scripts/smoke-rooms.mjs"
+    "smoke:rooms": "node scripts/smoke-rooms.mjs",
+    "smoke:match": "node scripts/smoke-match.mjs"
   }
 }
