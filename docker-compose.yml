@@ -48,6 +48,20 @@ services:
     ports:
       - "127.0.0.1:${MAIN_PORT:-19133}:${MAIN_PORT:-19133}"
 
+  rooms:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    command: ["node", "src/rooms.js"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ROOMS_DATA_FILE: /data/rooms.json
+    volumes:
+      - roomdata:/data
+    ports:
+      - "127.0.0.1:${ROOMS_PORT:-19135}:${ROOMS_PORT:-19135}"
+
   gateway:
     build:
       context: .
@@ -70,3 +84,4 @@ services:
 volumes:
   redisdata:
   pgdata:
+  roomdata:
