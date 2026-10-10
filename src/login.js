@@ -1,7 +1,10 @@
 import { startHttpService, readJson, json } from './http-common.js';
 import {
   accountPublicView,
+  authenticateLocalAccount,
   createAccount,
+  createLocalAccount,
+  createOrGetGuestAccount,
   getAccountByOpenId,
   getAccountByToken,
   issueSession,
@@ -28,10 +31,36 @@ function bearer(req) {
   return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 }
 
+function sessionPayload(req, account) {
+  return {
+    ok: true,
+    token: account.session.token,
+    ttl: sessionTtl,
+    expiresAt: account.session.expiresAt,
+    account: accountPublicView(account),
+    services: publicServices(req),
+    compatibility: 'clean-room-session-layer',
+    gameVersion: process.env.GAME_VERSION || 'unknown'
+  };
+}
+
+function ensureAllowed(account, res) {
+  if (!account) {
+    json(res, 401, { ok: false, error: 'invalid_credentials' });
+    return false;
+  }
+  if (account.banned) {
+    json(res, 403, { ok: false, error: 'account_banned' });
+    return false;
+  }
+  return true;
+}
+
 startHttpService({
   name: 'login',
   port,
   routes: {
+    // Clean-room compatibility endpoints used by the existing smoke tests.
     'POST /register': async (req, res) => {
       const body = await readJson(req);
       const account = createAccount({
@@ -43,41 +72,66 @@ startHttpService({
         deviceId: body.deviceId,
         clientVersion: body.clientVersion
       });
-
-      json(res, 201, {
-        ok: true,
-        account: accountPublicView(account)
-      });
+      json(res, 201, { ok: true, account: accountPublicView(account) });
     },
 
     'POST /login': async (req, res) => {
       const body = await readJson(req);
       const openId = String(body.openId || '').trim();
       const existing = openId ? getAccountByOpenId(openId) : null;
-      if (!existing) {
-        return json(res, 404, { ok: false, error: 'account_not_registered' });
-      }
-      if (existing.banned) {
-        return json(res, 403, { ok: false, error: 'account_banned' });
-      }
+      if (!existing) return json(res, 404, { ok: false, error: 'account_not_registered' });
+      if (!ensureAllowed(existing, res)) return;
 
       updateAccount(openId, {
         ...(body.deviceId ? { deviceId: String(body.deviceId) } : {}),
         ...(body.clientVersion ? { clientVersion: String(body.clientVersion) } : {}),
         ...(body.language ? { language: String(body.language) } : {})
       });
-
       const account = issueSession(openId, sessionTtl);
-      json(res, 200, {
-        ok: true,
-        token: account.session.token,
-        ttl: sessionTtl,
-        expiresAt: account.session.expiresAt,
-        account: accountPublicView(account),
-        services: publicServices(req),
-        compatibility: 'clean-room-session-layer',
-        gameVersion: process.env.GAME_VERSION || 'unknown'
+      json(res, 200, sessionPayload(req, account));
+    },
+
+    // Native FF Legacy accounts: no Facebook/Google/Garena dependency.
+    'POST /auth/register': async (req, res) => {
+      const body = await readJson(req);
+      const created = createLocalAccount({
+        username: body.username,
+        password: body.password,
+        nickname: body.nickname,
+        region: body.region,
+        language: body.language,
+        deviceId: body.deviceId,
+        clientVersion: body.clientVersion
       });
+      const account = issueSession(created.openId, sessionTtl);
+      json(res, 201, sessionPayload(req, account));
+    },
+
+    'POST /auth/login': async (req, res) => {
+      const body = await readJson(req);
+      const existing = authenticateLocalAccount(body.username, body.password);
+      if (!ensureAllowed(existing, res)) return;
+      updateAccount(existing.openId, {
+        ...(body.deviceId ? { deviceId: String(body.deviceId) } : {}),
+        ...(body.clientVersion ? { clientVersion: String(body.clientVersion) } : {}),
+        ...(body.language ? { language: String(body.language) } : {})
+      });
+      const account = issueSession(existing.openId, sessionTtl);
+      json(res, 200, sessionPayload(req, account));
+    },
+
+    'POST /auth/guest': async (req, res) => {
+      const body = await readJson(req);
+      const existing = createOrGetGuestAccount({
+        deviceId: body.deviceId,
+        nickname: body.nickname,
+        region: body.region || 'BR',
+        language: body.language || 'pt-BR',
+        clientVersion: body.clientVersion
+      });
+      if (!ensureAllowed(existing, res)) return;
+      const account = issueSession(existing.openId, sessionTtl);
+      json(res, 200, sessionPayload(req, account));
     },
 
     'POST /logout': async (req, res) => {
