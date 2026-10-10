@@ -7,18 +7,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type handoffPayload struct {
-	MatchID string   `json:"matchId"`
-	RoomID  string   `json:"roomId"`
-	Players []string `json:"players"`
-	Exp     int64    `json:"exp"`
+	MatchID      string         `json:"matchId"`
+	RoomID       string         `json:"roomId"`
+	Players      []string       `json:"players"`
+	Teams        map[string]int `json:"teams,omitempty"`
+	Mode         string         `json:"mode,omitempty"`
+	TargetRounds int            `json:"targetRounds,omitempty"`
+	Exp          int64          `json:"exp"`
 }
 
 type clientSession struct {
@@ -28,15 +33,53 @@ type clientSession struct {
 	SeenAt   time.Time
 }
 
+type vec3 struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+}
+
+type playerState struct {
+	PlayerID  string `json:"playerId"`
+	Team      int    `json:"team"`
+	Position  vec3   `json:"position"`
+	Health    int    `json:"health"`
+	MaxHealth int    `json:"maxHealth"`
+	Alive     bool   `json:"alive"`
+	Kills     int    `json:"kills"`
+	Deaths    int    `json:"deaths"`
+	Connected bool   `json:"connected"`
+	LastSeen  int64  `json:"lastSeen"`
+}
+
+type matchState struct {
+	mu           sync.Mutex
+	MatchID      string                  `json:"matchId"`
+	RoomID       string                  `json:"roomId"`
+	Mode         string                  `json:"mode"`
+	Status       string                  `json:"status"`
+	Round        int                     `json:"round"`
+	TargetRounds int                     `json:"targetRounds"`
+	Score        map[int]int             `json:"score"`
+	Players      map[string]*playerState `json:"players"`
+	CreatedAt    int64                   `json:"createdAt"`
+	UpdatedAt    int64                   `json:"updatedAt"`
+}
+
+type hitResult struct {
+	AttackerID string `json:"attackerId"`
+	TargetID   string `json:"targetId"`
+	Damage     int    `json:"damage"`
+	Health     int    `json:"health"`
+	Killed     bool   `json:"killed"`
+	RoundEnded bool   `json:"roundEnded"`
+	RoundWinner int   `json:"roundWinner,omitempty"`
+	MatchEnded bool   `json:"matchEnded"`
+}
+
 func main() {
-	port := os.Getenv("GAME_SERVER_PORT")
-	if port == "" {
-		port = "10100"
-	}
-	secret := os.Getenv("MATCH_HANDOFF_SECRET")
-	if secret == "" {
-		secret = "dev-change-me"
-	}
+	port := envOr("GAME_SERVER_PORT", "10100")
+	secret := envOr("MATCH_HANDOFF_SECRET", "dev-change-me")
 
 	addr, err := net.ResolveUDPAddr("udp", ":"+port)
 	if err != nil {
@@ -50,6 +93,8 @@ func main() {
 	defer conn.Close()
 
 	var sessions sync.Map
+	var matches sync.Map
+	go cleanupStaleSessions(&sessions, &matches)
 
 	log.Printf("[match] listening on :%s/udp", port)
 	buf := make([]byte, 64*1024)
@@ -63,54 +108,351 @@ func main() {
 
 		payload := strings.TrimSpace(string(buf[:n]))
 		if payload == "PING" {
-			_, _ = conn.WriteToUDP([]byte("PONG\n"), remote)
+			writeUDP(conn, remote, "PONG\n")
 			continue
 		}
 
 		if strings.HasPrefix(payload, "HELLO ") {
-			parts := strings.SplitN(payload, " ", 3)
-			if len(parts) != 3 {
-				_, _ = conn.WriteToUDP([]byte("ERR malformed_hello\n"), remote)
-				continue
-			}
-
-			token := parts[1]
-			playerID := strings.TrimSpace(parts[2])
-			handoff, err := verifyHandoff(token, secret)
-			if err != nil {
-				_, _ = conn.WriteToUDP([]byte("ERR invalid_handoff\n"), remote)
-				continue
-			}
-			if handoff.Exp < time.Now().UnixMilli() {
-				_, _ = conn.WriteToUDP([]byte("ERR handoff_expired\n"), remote)
-				continue
-			}
-			if !contains(handoff.Players, playerID) {
-				_, _ = conn.WriteToUDP([]byte("ERR player_not_in_match\n"), remote)
-				continue
-			}
-
-			sessions.Store(remote.String(), clientSession{
-				PlayerID: playerID,
-				MatchID:  handoff.MatchID,
-				RoomID:   handoff.RoomID,
-				SeenAt:   time.Now(),
-			})
-			_, _ = conn.WriteToUDP([]byte(fmt.Sprintf("WELCOME %s\n", handoff.MatchID)), remote)
-			log.Printf("[match] authenticated player=%s match=%s from=%s", playerID, handoff.MatchID, remote.String())
+			handleHello(conn, remote, payload, secret, &sessions, &matches)
 			continue
 		}
 
-		if value, ok := sessions.Load(remote.String()); ok {
-			session := value.(clientSession)
-			session.SeenAt = time.Now()
-			sessions.Store(remote.String(), session)
-			log.Printf("[match] player=%s match=%s -> %d bytes", session.PlayerID, session.MatchID, n)
+		value, ok := sessions.Load(remote.String())
+		if !ok {
+			writeUDP(conn, remote, "ERR authentication_required\n")
 			continue
 		}
 
-		_, _ = conn.WriteToUDP([]byte("ERR authentication_required\n"), remote)
+		session := value.(clientSession)
+		session.SeenAt = time.Now()
+		sessions.Store(remote.String(), session)
+
+		matchValue, ok := matches.Load(session.MatchID)
+		if !ok {
+			writeUDP(conn, remote, "ERR match_not_found\n")
+			continue
+		}
+		match := matchValue.(*matchState)
+		response, event := handleCommand(match, session.PlayerID, payload)
+		writeUDP(conn, remote, response+"\n")
+		if event != "" {
+			broadcastToMatch(conn, &sessions, session.MatchID, remote.String(), event+"\n")
+		}
 	}
+}
+
+func handleHello(conn *net.UDPConn, remote *net.UDPAddr, raw, secret string, sessions, matches *sync.Map) {
+	parts := strings.SplitN(raw, " ", 3)
+	if len(parts) != 3 {
+		writeUDP(conn, remote, "ERR malformed_hello\n")
+		return
+	}
+
+	token := parts[1]
+	playerID := strings.TrimSpace(parts[2])
+	handoff, err := verifyHandoff(token, secret)
+	if err != nil {
+		writeUDP(conn, remote, "ERR invalid_handoff\n")
+		return
+	}
+	if handoff.Exp < time.Now().UnixMilli() {
+		writeUDP(conn, remote, "ERR handoff_expired\n")
+		return
+	}
+	if !contains(handoff.Players, playerID) {
+		writeUDP(conn, remote, "ERR player_not_in_match\n")
+		return
+	}
+
+	match := getOrCreateMatch(matches, handoff)
+	match.mu.Lock()
+	player := match.Players[playerID]
+	player.Connected = true
+	player.LastSeen = time.Now().UnixMilli()
+	match.UpdatedAt = player.LastSeen
+	match.mu.Unlock()
+
+	sessions.Store(remote.String(), clientSession{
+		PlayerID: playerID,
+		MatchID:  handoff.MatchID,
+		RoomID:   handoff.RoomID,
+		SeenAt:   time.Now(),
+	})
+	writeUDP(conn, remote, fmt.Sprintf("WELCOME %s\n", handoff.MatchID))
+	broadcastToMatch(conn, sessions, handoff.MatchID, remote.String(), fmt.Sprintf("EVENT JOIN %s\n", playerID))
+	log.Printf("[match] authenticated player=%s match=%s from=%s", playerID, handoff.MatchID, remote.String())
+}
+
+func getOrCreateMatch(matches *sync.Map, handoff *handoffPayload) *matchState {
+	if value, ok := matches.Load(handoff.MatchID); ok {
+		return value.(*matchState)
+	}
+
+	now := time.Now().UnixMilli()
+	targetRounds := handoff.TargetRounds
+	if targetRounds <= 0 {
+		if strings.Contains(handoff.Mode, "clash_squad") {
+			targetRounds = 4
+		} else {
+			targetRounds = 1
+		}
+	}
+
+	match := &matchState{
+		MatchID:      handoff.MatchID,
+		RoomID:       handoff.RoomID,
+		Mode:         handoff.Mode,
+		Status:       "active",
+		Round:        1,
+		TargetRounds: targetRounds,
+		Score:        map[int]int{},
+		Players:      map[string]*playerState{},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	for index, id := range handoff.Players {
+		team := handoff.Teams[id]
+		if team <= 0 {
+			team = 1
+			if len(handoff.Players) > 1 && strings.Contains(handoff.Mode, "clash_squad") {
+				team = (index % 2) + 1
+			}
+		}
+		match.Players[id] = &playerState{
+			PlayerID: id,
+			Team: team,
+			Position: spawnForTeam(team, index),
+			Health: 200,
+			MaxHealth: 200,
+			Alive: true,
+			LastSeen: now,
+		}
+	}
+
+	actual, loaded := matches.LoadOrStore(handoff.MatchID, match)
+	if loaded {
+		return actual.(*matchState)
+	}
+	return match
+}
+
+func handleCommand(match *matchState, playerID, raw string) (string, string) {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return "ERR empty_command", ""
+	}
+
+	switch strings.ToUpper(fields[0]) {
+	case "PING":
+		return "PONG", ""
+	case "STATE":
+		return stateResponse(match), ""
+	case "MOVE":
+		if len(fields) != 4 {
+			return "ERR malformed_move", ""
+		}
+		x, errX := strconv.ParseFloat(fields[1], 64)
+		y, errY := strconv.ParseFloat(fields[2], 64)
+		z, errZ := strconv.ParseFloat(fields[3], 64)
+		if errX != nil || errY != nil || errZ != nil || !validCoordinate(x) || !validCoordinate(y) || !validCoordinate(z) {
+			return "ERR invalid_position", ""
+		}
+		position, err := movePlayer(match, playerID, vec3{X: x, Y: y, Z: z})
+		if err != nil {
+			return "ERR " + err.Error(), ""
+		}
+		body, _ := json.Marshal(position)
+		message := fmt.Sprintf("MOVE %s %s", playerID, string(body))
+		return "OK " + message, "EVENT " + message
+	case "HIT":
+		if len(fields) != 3 {
+			return "ERR malformed_hit", ""
+		}
+		damage, err := strconv.Atoi(fields[2])
+		if err != nil || damage <= 0 || damage > 200 {
+			return "ERR invalid_damage", ""
+		}
+		result, err := applyHit(match, playerID, fields[1], damage)
+		if err != nil {
+			return "ERR " + err.Error(), ""
+		}
+		body, _ := json.Marshal(result)
+		return "OK HIT " + string(body), "EVENT HIT " + string(body)
+	case "LEAVE":
+		match.mu.Lock()
+		if player := match.Players[playerID]; player != nil {
+			player.Connected = false
+			player.LastSeen = time.Now().UnixMilli()
+			match.UpdatedAt = player.LastSeen
+		}
+		match.mu.Unlock()
+		return "OK LEAVE", "EVENT LEAVE " + playerID
+	default:
+		return "ERR unknown_command", ""
+	}
+}
+
+func movePlayer(match *matchState, playerID string, next vec3) (vec3, error) {
+	match.mu.Lock()
+	defer match.mu.Unlock()
+	if match.Status != "active" {
+		return vec3{}, fmt.Errorf("match_not_active")
+	}
+	player := match.Players[playerID]
+	if player == nil {
+		return vec3{}, fmt.Errorf("player_not_in_match")
+	}
+	if !player.Alive {
+		return vec3{}, fmt.Errorf("player_dead")
+	}
+	if distance(player.Position, next) > 120 {
+		return vec3{}, fmt.Errorf("movement_too_large")
+	}
+	player.Position = next
+	player.LastSeen = time.Now().UnixMilli()
+	match.UpdatedAt = player.LastSeen
+	return next, nil
+}
+
+func applyHit(match *matchState, attackerID, targetID string, damage int) (hitResult, error) {
+	match.mu.Lock()
+	defer match.mu.Unlock()
+	if match.Status != "active" {
+		return hitResult{}, fmt.Errorf("match_not_active")
+	}
+	attacker := match.Players[attackerID]
+	target := match.Players[targetID]
+	if attacker == nil || target == nil {
+		return hitResult{}, fmt.Errorf("player_not_in_match")
+	}
+	if attackerID == targetID {
+		return hitResult{}, fmt.Errorf("self_hit_not_allowed")
+	}
+	if !attacker.Alive {
+		return hitResult{}, fmt.Errorf("attacker_dead")
+	}
+	if !target.Alive {
+		return hitResult{}, fmt.Errorf("target_dead")
+	}
+	if attacker.Team > 0 && attacker.Team == target.Team {
+		return hitResult{}, fmt.Errorf("friendly_fire_disabled")
+	}
+
+	if damage > target.Health {
+		damage = target.Health
+	}
+	target.Health -= damage
+	result := hitResult{AttackerID: attackerID, TargetID: targetID, Damage: damage, Health: target.Health}
+	if target.Health <= 0 {
+		target.Health = 0
+		target.Alive = false
+		target.Deaths++
+		attacker.Kills++
+		result.Killed = true
+	}
+	now := time.Now().UnixMilli()
+	attacker.LastSeen = now
+	target.LastSeen = now
+	match.UpdatedAt = now
+
+	if result.Killed {
+		ended, winner, finished := evaluateRoundLocked(match)
+		result.RoundEnded = ended
+		result.RoundWinner = winner
+		result.MatchEnded = finished
+	}
+	return result, nil
+}
+
+func evaluateRoundLocked(match *matchState) (bool, int, bool) {
+	allTeams := map[int]bool{}
+	aliveTeams := map[int]bool{}
+	for _, player := range match.Players {
+		allTeams[player.Team] = true
+		if player.Alive {
+			aliveTeams[player.Team] = true
+		}
+	}
+	if len(allTeams) < 2 || len(aliveTeams) != 1 {
+		return false, 0, false
+	}
+
+	winner := 0
+	for team := range aliveTeams {
+		winner = team
+	}
+	match.Score[winner]++
+	if match.Score[winner] >= match.TargetRounds {
+		match.Status = "finished"
+		match.UpdatedAt = time.Now().UnixMilli()
+		return true, winner, true
+	}
+
+	match.Round++
+	for index, player := range match.Players {
+		player.Health = player.MaxHealth
+		player.Alive = true
+		player.Position = spawnForTeam(player.Team, index)
+	}
+	match.UpdatedAt = time.Now().UnixMilli()
+	return true, winner, false
+}
+
+func stateResponse(match *matchState) string {
+	match.mu.Lock()
+	defer match.mu.Unlock()
+	body, err := json.Marshal(match)
+	if err != nil {
+		return "ERR state_encode_failed"
+	}
+	return "STATE " + string(body)
+}
+
+func cleanupStaleSessions(sessions, matches *sync.Map) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for now := range ticker.C {
+		sessions.Range(func(key, value any) bool {
+			session := value.(clientSession)
+			if now.Sub(session.SeenAt) <= 90*time.Second {
+				return true
+			}
+			sessions.Delete(key)
+			if matchValue, ok := matches.Load(session.MatchID); ok {
+				match := matchValue.(*matchState)
+				match.mu.Lock()
+				if player := match.Players[session.PlayerID]; player != nil {
+					player.Connected = false
+					player.LastSeen = now.UnixMilli()
+				}
+				match.UpdatedAt = now.UnixMilli()
+				match.mu.Unlock()
+			}
+			return true
+		})
+	}
+}
+
+func broadcastToMatch(conn *net.UDPConn, sessions *sync.Map, matchID, exclude, message string) {
+	sessions.Range(func(key, value any) bool {
+		remoteString := key.(string)
+		if remoteString == exclude {
+			return true
+		}
+		session := value.(clientSession)
+		if session.MatchID != matchID {
+			return true
+		}
+		remote, err := net.ResolveUDPAddr("udp", remoteString)
+		if err == nil {
+			writeUDP(conn, remote, message)
+		}
+		return true
+	})
+}
+
+func writeUDP(conn *net.UDPConn, remote *net.UDPAddr, message string) {
+	_, _ = conn.WriteToUDP([]byte(message), remote)
 }
 
 func verifyHandoff(token, secret string) (*handoffPayload, error) {
@@ -122,7 +464,6 @@ func verifyHandoff(token, secret string) (*handoffPayload, error) {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(parts[0]))
 	expected := mac.Sum(nil)
-
 	provided, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil || !hmac.Equal(expected, provided) {
 		return nil, fmt.Errorf("invalid signature")
@@ -143,6 +484,20 @@ func verifyHandoff(token, secret string) (*handoffPayload, error) {
 	return &payload, nil
 }
 
+func spawnForTeam(team, index int) vec3 {
+	baseX := float64((team - 1) * 30)
+	return vec3{X: baseX + float64(index%4)*2, Y: 0, Z: float64(index/4) * 2}
+}
+
+func validCoordinate(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && math.Abs(value) <= 100000
+}
+
+func distance(a, b vec3) float64 {
+	dx, dy, dz := a.X-b.X, a.Y-b.Y, a.Z-b.Z
+	return math.Sqrt(dx*dx + dy*dy + dz*dz)
+}
+
 func contains(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {
@@ -150,4 +505,11 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func envOr(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
