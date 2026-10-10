@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,23 +30,35 @@ type matchResultPayload struct {
 	FinishedAt int64               `json:"finishedAt"`
 }
 
+var reportedMatches sync.Map
+
 func maybeReportMatchResult(match *matchState) {
 	match.mu.Lock()
-	if match.Status != "finished" || match.ResultReported {
+	if match.Status != "finished" {
 		match.mu.Unlock()
 		return
 	}
-	match.ResultReported = true
+	if _, loaded := reportedMatches.LoadOrStore(match.MatchID, true); loaded {
+		match.mu.Unlock()
+		return
+	}
+
+	winnerTeam := 0
+	winnerScore := -1
 	payload := matchResultPayload{
 		MatchID:    match.MatchID,
 		RoomID:     match.RoomID,
-		WinnerTeam: match.WinnerTeam,
 		Score:      map[int]int{},
-		FinishedAt: match.FinishedAt,
+		FinishedAt: match.UpdatedAt,
 	}
 	for team, score := range match.Score {
 		payload.Score[team] = score
+		if score > winnerScore {
+			winnerScore = score
+			winnerTeam = team
+		}
 	}
+	payload.WinnerTeam = winnerTeam
 	for _, player := range match.Players {
 		payload.Players = append(payload.Players, matchResultPlayer{
 			PlayerID: player.PlayerID,
@@ -60,7 +73,7 @@ func maybeReportMatchResult(match *matchState) {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		resetResultReported(match)
+		reportedMatches.Delete(match.MatchID)
 		return
 	}
 
@@ -95,12 +108,6 @@ func maybeReportMatchResult(match *matchState) {
 		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 	}
 
-	resetResultReported(match)
+	reportedMatches.Delete(match.MatchID)
 	log.Printf("[match] result report failed match=%s: %v", payload.MatchID, lastErr)
-}
-
-func resetResultReported(match *matchState) {
-	match.mu.Lock()
-	match.ResultReported = false
-	match.mu.Unlock()
 }
