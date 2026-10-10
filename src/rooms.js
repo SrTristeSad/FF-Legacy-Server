@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import fs from 'node:fs';
 import path from 'node:path';
 import { startHttpService, json, readJson } from './http-common.js';
+import { MODE_PRESETS, getModePreset } from './mode-presets.js';
 
 const port = Number(process.env.ROOMS_PORT || 19135);
 const dataFile = process.env.ROOMS_DATA_FILE || '/data/rooms.json';
@@ -9,98 +10,85 @@ const publicHost = process.env.PUBLIC_HOST || '127.0.0.1';
 const gamePort = Number(process.env.GAME_SERVER_PORT || 10100);
 const handoffSecret = process.env.MATCH_HANDOFF_SECRET || 'dev-change-me';
 
-const MODE_PRESETS = Object.freeze({
-  casual_solo: { maxPlayers: 1, minPlayers: 1, teams: 1 },
-  casual_duo: { maxPlayers: 2, minPlayers: 2, teams: 1 },
-  casual_squad: { maxPlayers: 4, minPlayers: 2, teams: 1 },
-  ranked_solo: { maxPlayers: 1, minPlayers: 1, teams: 1 },
-  ranked_duo: { maxPlayers: 2, minPlayers: 2, teams: 1 },
-  ranked_squad: { maxPlayers: 4, minPlayers: 4, teams: 1 },
-  clash_squad: { maxPlayers: 8, minPlayers: 2, teams: 2 },
-  clash_squad_ranked: { maxPlayers: 8, minPlayers: 8, teams: 2 },
-  custom: { maxPlayers: 48, minPlayers: 1, teams: 2 },
-  training: { maxPlayers: 24, minPlayers: 1, teams: 1 }
-});
-
 const state = loadState();
 
-function blankState() {
+function emptyState() {
   return { rooms: {}, playerRoom: {}, queues: {} };
 }
 
 function loadState() {
   try {
-    const raw = fs.readFileSync(dataFile, 'utf8');
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
     return {
       rooms: parsed.rooms || {},
       playerRoom: parsed.playerRoom || {},
       queues: parsed.queues || {}
     };
   } catch (error) {
-    if (error.code !== 'ENOENT') console.error('[rooms] failed loading state:', error.message);
-    return blankState();
+    if (error.code !== 'ENOENT') console.error('[rooms] load failed:', error.message);
+    return emptyState();
   }
 }
 
 function saveState() {
-  const dir = path.dirname(dataFile);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.dirname(dataFile), { recursive: true });
   const tmp = `${dataFile}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
   fs.renameSync(tmp, dataFile);
+}
+
+function fail(status, code, details) {
+  const error = new Error(code);
+  error.status = status;
+  error.code = code;
+  error.details = details;
+  throw error;
 }
 
 function now() {
   return new Date().toISOString();
 }
 
-function cleanPlayerId(value) {
+function playerId(value) {
   const id = String(value ?? '').trim();
-  if (!id || id.length > 80) throw httpError(400, 'invalid_player_id');
+  if (!id || id.length > 80) fail(400, 'invalid_player_id');
   return id;
 }
 
-function cleanNickname(value) {
-  const nickname = String(value ?? 'Player').trim().slice(0, 24);
-  return nickname || 'Player';
+function nickname(value) {
+  return String(value || 'Player').trim().slice(0, 24) || 'Player';
 }
 
-function cleanMode(value) {
-  const mode = String(value ?? '').trim();
-  if (!MODE_PRESETS[mode]) throw httpError(400, 'unsupported_mode');
-  return mode;
+function modeName(value) {
+  const valueString = String(value || '').trim();
+  if (!getModePreset(valueString)) fail(400, 'unsupported_mode');
+  return valueString;
 }
 
-function httpError(status, code, details) {
-  const error = new Error(code);
-  error.status = status;
-  error.code = code;
-  error.details = details;
-  return error;
-}
-
-function hashPassword(password) {
+function passwordHash(password) {
   if (!password) return null;
   return createHash('sha256').update(String(password)).digest('hex');
 }
 
-function passwordMatches(room, candidate) {
+function passwordMatches(room, password) {
   if (!room.passwordHash) return true;
   const expected = Buffer.from(room.passwordHash, 'hex');
-  const actual = Buffer.from(hashPassword(candidate) || '', 'hex');
+  const actualHash = passwordHash(password);
+  if (!actualHash) return false;
+  const actual = Buffer.from(actualHash, 'hex');
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-function makeCode() {
+function inviteCode() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const bytes = randomBytes(6);
     let code = '';
     for (const byte of bytes) code += alphabet[byte % alphabet.length];
-    if (!Object.values(state.rooms).some((room) => room.code === code && room.status !== 'closed')) return code;
+    const taken = Object.values(state.rooms).some((room) => room.code === code && room.status !== 'closed');
+    if (!taken) return code;
   }
-  throw httpError(503, 'room_code_exhausted');
+  fail(503, 'room_code_exhausted');
 }
 
 function publicRoom(room) {
@@ -108,6 +96,7 @@ function publicRoom(room) {
     id: room.id,
     code: room.code,
     mode: room.mode,
+    modeInfo: getModePreset(room.mode),
     status: room.status,
     ownerId: room.ownerId,
     maxPlayers: room.maxPlayers,
@@ -115,38 +104,49 @@ function publicRoom(room) {
     private: room.private,
     passwordProtected: Boolean(room.passwordHash),
     members: room.members.map(({ playerId, nickname, ready, joinedAt, team, slot }) => ({
-      playerId, nickname, ready, joinedAt, team, slot
+      playerId,
+      nickname,
+      ready,
+      joinedAt,
+      team,
+      slot
     })),
     createdAt: room.createdAt,
     updatedAt: room.updatedAt,
-    match: room.match ? { id: room.match.id, host: room.match.host, port: room.match.port } : null
+    match: room.match ? {
+      id: room.match.id,
+      host: room.match.host,
+      port: room.match.port,
+      expiresAt: room.match.expiresAt
+    } : null
   };
 }
 
-function findRoom(input = {}) {
+function findRoom(input = {}, allowClosed = false) {
   let room = null;
   if (input.roomId) room = state.rooms[String(input.roomId)];
   if (!room && input.code) {
     const code = String(input.code).trim().toUpperCase();
     room = Object.values(state.rooms).find((candidate) => candidate.code === code);
   }
-  if (!room || room.status === 'closed') throw httpError(404, 'room_not_found');
+  if (!room || (!allowClosed && room.status === 'closed')) fail(404, 'room_not_found');
   return room;
 }
 
-function removePlayerFromQueues(playerId) {
-  let changed = false;
-  for (const [mode, queue] of Object.entries(state.queues)) {
-    const before = queue.length;
-    state.queues[mode] = queue.filter((entry) => entry.playerId !== playerId);
-    if (before !== state.queues[mode].length) changed = true;
+function removeFromQueues(id) {
+  let removed = false;
+  for (const mode of Object.keys(state.queues)) {
+    const before = state.queues[mode].length;
+    state.queues[mode] = state.queues[mode].filter((entry) => entry.playerId !== id);
+    if (state.queues[mode].length !== before) removed = true;
   }
-  return changed;
+  return removed;
 }
 
 function assignTeams(room) {
-  const teams = MODE_PRESETS[room.mode]?.teams || 1;
-  if (teams <= 1) {
+  const preset = getModePreset(room.mode);
+  const teams = Math.max(1, Number(preset?.teams || 1));
+  if (teams === 1) {
     room.members.forEach((member, index) => {
       member.team = 1;
       member.slot = index;
@@ -154,73 +154,68 @@ function assignTeams(room) {
     return;
   }
 
-  const perTeam = Math.ceil(room.maxPlayers / teams);
+  const teamSize = Math.ceil(room.maxPlayers / teams);
   room.members.forEach((member, index) => {
-    member.team = Math.min(teams, Math.floor(index / perTeam) + 1);
-    member.slot = index % perTeam;
+    member.team = Math.min(teams, Math.floor(index / teamSize) + 1);
+    member.slot = index % teamSize;
   });
 }
 
-function createRoom({ playerId, nickname, mode, private: isPrivate = false, password = null, maxPlayers = null, source = 'manual' }) {
-  if (state.playerRoom[playerId]) throw httpError(409, 'player_already_in_room');
-  removePlayerFromQueues(playerId);
+function createRoom({ id, name, mode, privateRoom = false, password = null, maxPlayers = null, source = 'manual' }) {
+  if (state.playerRoom[id]) fail(409, 'player_already_in_room');
+  removeFromQueues(id);
 
-  const preset = MODE_PRESETS[mode];
-  const requestedMax = Number(maxPlayers || preset.maxPlayers);
-  const effectiveMax = Math.max(1, Math.min(requestedMax, preset.maxPlayers));
+  const preset = getModePreset(mode);
+  const requested = Number(maxPlayers || preset.maxPlayers);
+  const effectiveMax = Math.max(1, Math.min(requested, preset.maxPlayers));
   const timestamp = now();
   const room = {
     id: randomUUID(),
-    code: makeCode(),
+    code: inviteCode(),
     mode,
     source,
     status: 'waiting',
-    ownerId: playerId,
+    ownerId: id,
     maxPlayers: effectiveMax,
     minPlayers: Math.min(preset.minPlayers, effectiveMax),
-    private: Boolean(isPrivate),
-    passwordHash: hashPassword(password),
-    members: [{ playerId, nickname, ready: false, joinedAt: timestamp, team: 1, slot: 0 }],
+    private: Boolean(privateRoom),
+    passwordHash: passwordHash(password),
+    members: [{ playerId: id, nickname: name, ready: false, joinedAt: timestamp, team: 1, slot: 0 }],
     createdAt: timestamp,
     updatedAt: timestamp,
     match: null
   };
 
   state.rooms[room.id] = room;
-  state.playerRoom[playerId] = room.id;
+  state.playerRoom[id] = room.id;
   assignTeams(room);
   return room;
 }
 
-function joinRoom(room, { playerId, nickname, password = null }) {
-  if (room.status !== 'waiting') throw httpError(409, 'room_not_joinable');
-  if (room.members.length >= room.maxPlayers) throw httpError(409, 'room_full');
-  if (!passwordMatches(room, password)) throw httpError(403, 'wrong_room_password');
+function joinRoom(room, { id, name, password = null }) {
+  if (room.status !== 'waiting') fail(409, 'room_not_joinable');
+  if (!passwordMatches(room, password)) fail(403, 'wrong_room_password');
+  if (room.members.some((member) => member.playerId === id)) return room;
+  if (room.members.length >= room.maxPlayers) fail(409, 'room_full');
+  if (state.playerRoom[id] && state.playerRoom[id] !== room.id) fail(409, 'player_already_in_room');
 
-  const currentRoomId = state.playerRoom[playerId];
-  if (currentRoomId && currentRoomId !== room.id) throw httpError(409, 'player_already_in_room');
-  if (room.members.some((member) => member.playerId === playerId)) return room;
-
-  removePlayerFromQueues(playerId);
-  room.members.push({ playerId, nickname, ready: false, joinedAt: now(), team: 1, slot: 0 });
-  state.playerRoom[playerId] = room.id;
+  removeFromQueues(id);
+  room.members.push({ playerId: id, nickname: name, ready: false, joinedAt: now(), team: 1, slot: 0 });
+  state.playerRoom[id] = room.id;
   room.updatedAt = now();
   assignTeams(room);
   return room;
 }
 
-function leaveRoom(room, playerId) {
-  const index = room.members.findIndex((member) => member.playerId === playerId);
-  if (index < 0) throw httpError(404, 'player_not_in_room');
+function leaveRoom(room, id) {
+  const index = room.members.findIndex((member) => member.playerId === id);
+  if (index < 0) fail(404, 'player_not_in_room');
 
   room.members.splice(index, 1);
-  delete state.playerRoom[playerId];
+  delete state.playerRoom[id];
 
-  if (room.members.length === 0) {
-    room.status = 'closed';
-  } else if (room.ownerId === playerId) {
-    room.ownerId = room.members[0].playerId;
-  }
+  if (!room.members.length) room.status = 'closed';
+  else if (room.ownerId === id) room.ownerId = room.members[0].playerId;
 
   room.updatedAt = now();
   assignTeams(room);
@@ -234,40 +229,49 @@ function signHandoff(payload) {
 }
 
 function startRoom(room, actorId, { force = false } = {}) {
-  if (room.ownerId !== actorId) throw httpError(403, 'owner_required');
-  if (room.status !== 'waiting') throw httpError(409, 'room_not_waiting');
-  if (room.members.length < room.minPlayers && !force) throw httpError(409, 'not_enough_players');
+  if (room.ownerId !== actorId) fail(403, 'owner_required');
+  if (room.status !== 'waiting') fail(409, 'room_not_waiting');
+  if (room.members.length < room.minPlayers && !force) fail(409, 'not_enough_players');
   if (!force && room.members.some((member) => member.playerId !== room.ownerId && !member.ready)) {
-    throw httpError(409, 'players_not_ready');
+    fail(409, 'players_not_ready');
   }
 
   const matchId = randomUUID();
   const expiresAt = Date.now() + 10 * 60 * 1000;
-  const token = signHandoff({ matchId, roomId: room.id, players: room.members.map((member) => member.playerId), exp: expiresAt });
+  const players = room.members.map((member) => member.playerId);
+  const token = signHandoff({ matchId, roomId: room.id, players, exp: expiresAt });
 
   room.status = 'in_match';
   room.updatedAt = now();
-  room.match = {
-    id: matchId,
-    host: publicHost,
-    port: gamePort,
-    token,
-    expiresAt
-  };
-
+  room.match = { id: matchId, host: publicHost, port: gamePort, token, expiresAt };
   return room;
 }
 
+function finishRoom(room, actorId) {
+  if (room.ownerId !== actorId) fail(403, 'owner_required');
+  if (room.status !== 'in_match') fail(409, 'room_not_in_match');
+
+  for (const member of room.members) delete state.playerRoom[member.playerId];
+  room.status = 'closed';
+  room.updatedAt = now();
+  return room;
+}
+
+function queuePosition(mode, id) {
+  const index = (state.queues[mode] || []).findIndex((entry) => entry.playerId === id);
+  return index < 0 ? null : index + 1;
+}
+
 function processQueue(mode) {
-  const preset = MODE_PRESETS[mode];
+  const preset = getModePreset(mode);
   const queue = state.queues[mode] || [];
   const created = [];
 
   while (queue.length >= preset.maxPlayers) {
     const group = queue.splice(0, preset.maxPlayers);
     const first = group.shift();
-    const room = createRoom({ ...first, mode, source: 'matchmaking' });
-    for (const player of group) joinRoom(room, player);
+    const room = createRoom({ id: first.playerId, name: first.nickname, mode, source: 'matchmaking' });
+    for (const member of group) joinRoom(room, { id: member.playerId, name: member.nickname });
     for (const member of room.members) member.ready = true;
     startRoom(room, room.ownerId, { force: true });
     created.push(room);
@@ -277,22 +281,16 @@ function processQueue(mode) {
   return created;
 }
 
-function queuePosition(mode, playerId) {
-  const queue = state.queues[mode] || [];
-  const index = queue.findIndex((entry) => entry.playerId === playerId);
-  return index < 0 ? null : index + 1;
-}
-
 const routes = {
   'GET /modes': async (_req, res) => {
     json(res, 200, { ok: true, modes: MODE_PRESETS });
   },
 
   'GET /rooms': async (_req, res, url) => {
-    const mode = url.searchParams.get('mode');
+    const requestedMode = url.searchParams.get('mode');
     const rooms = Object.values(state.rooms)
       .filter((room) => room.status === 'waiting' && !room.private)
-      .filter((room) => !mode || room.mode === mode)
+      .filter((room) => !requestedMode || room.mode === requestedMode)
       .map(publicRoom);
     json(res, 200, { ok: true, rooms });
   },
@@ -304,12 +302,11 @@ const routes = {
 
   'POST /rooms/create': async (req, res) => {
     const body = await readJson(req);
-    const playerId = cleanPlayerId(body.playerId);
     const room = createRoom({
-      playerId,
-      nickname: cleanNickname(body.nickname),
-      mode: cleanMode(body.mode),
-      private: body.private,
+      id: playerId(body.playerId),
+      name: nickname(body.nickname),
+      mode: modeName(body.mode),
+      privateRoom: body.private,
       password: body.password,
       maxPlayers: body.maxPlayers
     });
@@ -319,28 +316,28 @@ const routes = {
 
   'POST /rooms/join': async (req, res) => {
     const body = await readJson(req);
-    const playerId = cleanPlayerId(body.playerId);
     const room = findRoom(body);
-    joinRoom(room, { playerId, nickname: cleanNickname(body.nickname), password: body.password });
+    joinRoom(room, { id: playerId(body.playerId), name: nickname(body.nickname), password: body.password });
     saveState();
     json(res, 200, { ok: true, room: publicRoom(room) });
   },
 
   'POST /rooms/leave': async (req, res) => {
     const body = await readJson(req);
-    const playerId = cleanPlayerId(body.playerId);
-    const room = findRoom(body.roomId || body.code ? body : { roomId: state.playerRoom[playerId] });
-    leaveRoom(room, playerId);
+    const id = playerId(body.playerId);
+    const selector = body.roomId || body.code ? body : { roomId: state.playerRoom[id] };
+    const room = findRoom(selector);
+    leaveRoom(room, id);
     saveState();
     json(res, 200, { ok: true, room: publicRoom(room) });
   },
 
   'POST /rooms/ready': async (req, res) => {
     const body = await readJson(req);
-    const playerId = cleanPlayerId(body.playerId);
-    const room = findRoom({ roomId: body.roomId || state.playerRoom[playerId], code: body.code });
-    const member = room.members.find((candidate) => candidate.playerId === playerId);
-    if (!member) throw httpError(404, 'player_not_in_room');
+    const id = playerId(body.playerId);
+    const room = findRoom({ roomId: body.roomId || state.playerRoom[id], code: body.code });
+    const member = room.members.find((candidate) => candidate.playerId === id);
+    if (!member) fail(404, 'player_not_in_room');
     member.ready = body.ready !== false;
     room.updatedAt = now();
     saveState();
@@ -349,11 +346,11 @@ const routes = {
 
   'POST /rooms/kick': async (req, res) => {
     const body = await readJson(req);
-    const actorId = cleanPlayerId(body.actorId);
-    const targetId = cleanPlayerId(body.targetId);
+    const actorId = playerId(body.actorId);
+    const targetId = playerId(body.targetId);
     const room = findRoom({ roomId: body.roomId || state.playerRoom[actorId], code: body.code });
-    if (room.ownerId !== actorId) throw httpError(403, 'owner_required');
-    if (targetId === actorId) throw httpError(400, 'owner_cannot_kick_self');
+    if (room.ownerId !== actorId) fail(403, 'owner_required');
+    if (targetId === actorId) fail(400, 'owner_cannot_kick_self');
     leaveRoom(room, targetId);
     saveState();
     json(res, 200, { ok: true, room: publicRoom(room) });
@@ -361,33 +358,39 @@ const routes = {
 
   'POST /rooms/start': async (req, res) => {
     const body = await readJson(req);
-    const actorId = cleanPlayerId(body.playerId);
-    const room = findRoom({ roomId: body.roomId || state.playerRoom[actorId], code: body.code });
-    startRoom(room, actorId);
+    const id = playerId(body.playerId);
+    const room = findRoom({ roomId: body.roomId || state.playerRoom[id], code: body.code });
+    startRoom(room, id);
     saveState();
-    json(res, 200, {
-      ok: true,
-      room: publicRoom(room),
-      handoff: room.match
-    });
+    json(res, 200, { ok: true, room: publicRoom(room), handoff: room.match });
+  },
+
+  'POST /rooms/finish': async (req, res) => {
+    const body = await readJson(req);
+    const id = playerId(body.playerId);
+    const room = findRoom({ roomId: body.roomId || state.playerRoom[id], code: body.code });
+    finishRoom(room, id);
+    saveState();
+    json(res, 200, { ok: true, room: publicRoom(room) });
   },
 
   'POST /queue/join': async (req, res) => {
     const body = await readJson(req);
-    const playerId = cleanPlayerId(body.playerId);
-    const mode = cleanMode(body.mode);
-    if (state.playerRoom[playerId]) throw httpError(409, 'player_already_in_room');
-    removePlayerFromQueues(playerId);
+    const id = playerId(body.playerId);
+    const mode = modeName(body.mode);
+    if (state.playerRoom[id]) fail(409, 'player_already_in_room');
+
+    removeFromQueues(id);
     state.queues[mode] ||= [];
-    state.queues[mode].push({ playerId, nickname: cleanNickname(body.nickname), queuedAt: now() });
+    state.queues[mode].push({ playerId: id, nickname: nickname(body.nickname), queuedAt: now() });
     const matches = processQueue(mode);
     saveState();
 
-    const roomId = state.playerRoom[playerId];
+    const roomId = state.playerRoom[id];
     json(res, 200, {
       ok: true,
       matched: Boolean(roomId),
-      position: roomId ? null : queuePosition(mode, playerId),
+      position: roomId ? null : queuePosition(mode, id),
       room: roomId ? publicRoom(state.rooms[roomId]) : null,
       matchesCreated: matches.length
     });
@@ -395,23 +398,23 @@ const routes = {
 
   'POST /queue/leave': async (req, res) => {
     const body = await readJson(req);
-    const playerId = cleanPlayerId(body.playerId);
-    const removed = removePlayerFromQueues(playerId);
+    const removed = removeFromQueues(playerId(body.playerId));
     saveState();
     json(res, 200, { ok: true, removed });
   },
 
   'GET /queue/status': async (_req, res, url) => {
-    const playerId = cleanPlayerId(url.searchParams.get('playerId'));
-    const roomId = state.playerRoom[playerId];
+    const id = playerId(url.searchParams.get('playerId'));
+    const roomId = state.playerRoom[id];
     if (roomId && state.rooms[roomId]) {
       return json(res, 200, { ok: true, matched: true, room: publicRoom(state.rooms[roomId]) });
     }
 
     for (const mode of Object.keys(state.queues)) {
-      const position = queuePosition(mode, playerId);
-      if (position) return json(res, 200, { ok: true, matched: false, mode, position });
+      const position = queuePosition(mode, id);
+      if (position) return json(res, 200, { ok: true, matched: false, queued: true, mode, position });
     }
+
     json(res, 200, { ok: true, matched: false, queued: false });
   }
 };
