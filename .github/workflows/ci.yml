@@ -21,6 +21,7 @@ jobs:
           node --check src/live.js
           node --check src/login.js
           node --check src/main.js
+          node --check src/mode-presets.js
           node --check src/rooms.js
           node --check src/gateway.js
           node --check scripts/smoke-rooms.mjs
