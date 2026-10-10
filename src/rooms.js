@@ -9,6 +9,7 @@ const dataFile = process.env.ROOMS_DATA_FILE || '/data/rooms.json';
 const publicHost = process.env.PUBLIC_HOST || '127.0.0.1';
 const gamePort = Number(process.env.GAME_SERVER_PORT || 10100);
 const handoffSecret = process.env.MATCH_HANDOFF_SECRET || 'dev-change-me';
+const resultSecret = process.env.MATCH_RESULT_SECRET || handoffSecret;
 
 const state = loadState();
 
@@ -79,6 +80,12 @@ function passwordMatches(room, password) {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
+function secretMatches(expected, provided) {
+  const a = Buffer.from(String(expected || ''));
+  const b = Buffer.from(String(provided || ''));
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
 function inviteCode() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -118,7 +125,8 @@ function publicRoom(room) {
       host: room.match.host,
       port: room.match.port,
       expiresAt: room.match.expiresAt
-    } : null
+    } : null,
+    result: room.result || null
   };
 }
 
@@ -183,7 +191,8 @@ function createRoom({ id, name, mode, privateRoom = false, password = null, maxP
     members: [{ playerId: id, nickname: name, ready: false, joinedAt: timestamp, team: 1, slot: 0 }],
     createdAt: timestamp,
     updatedAt: timestamp,
-    match: null
+    match: null,
+    result: null
   };
 
   state.rooms[room.id] = room;
@@ -254,6 +263,7 @@ function startRoom(room, actorId, { force = false } = {}) {
 
   room.status = 'in_match';
   room.updatedAt = now();
+  room.result = null;
   room.match = { id: matchId, host: publicHost, port: gamePort, token, expiresAt };
   return room;
 }
@@ -262,6 +272,47 @@ function finishRoom(room, actorId) {
   if (room.ownerId !== actorId) fail(403, 'owner_required');
   if (room.status !== 'in_match') fail(409, 'room_not_in_match');
 
+  for (const member of room.members) delete state.playerRoom[member.playerId];
+  room.status = 'closed';
+  room.updatedAt = now();
+  return room;
+}
+
+function persistMatchResult(room, body) {
+  const matchId = String(body.matchId || '');
+  if (!room.match || room.match.id !== matchId) fail(409, 'match_id_mismatch');
+  if (room.result?.matchId === matchId && room.status === 'closed') return room;
+
+  const memberIds = new Set(room.members.map((member) => member.playerId));
+  const players = Array.isArray(body.players)
+    ? body.players
+        .filter((player) => memberIds.has(String(player.playerId || '')))
+        .map((player) => ({
+          playerId: String(player.playerId),
+          team: Number(player.team || 0),
+          kills: Math.max(0, Number(player.kills || 0)),
+          deaths: Math.max(0, Number(player.deaths || 0)),
+          revives: Math.max(0, Number(player.revives || 0)),
+          credits: Math.max(0, Number(player.credits || 0))
+        }))
+    : [];
+
+  const score = {};
+  if (body.score && typeof body.score === 'object') {
+    for (const [team, value] of Object.entries(body.score)) {
+      const teamNumber = Number(team);
+      if (Number.isInteger(teamNumber) && teamNumber > 0) score[String(teamNumber)] = Math.max(0, Number(value || 0));
+    }
+  }
+
+  room.result = {
+    matchId,
+    winnerTeam: Math.max(0, Number(body.winnerTeam || 0)),
+    score,
+    players,
+    finishedAt: Number(body.finishedAt || Date.now()),
+    receivedAt: Date.now()
+  };
   for (const member of room.members) delete state.playerRoom[member.playerId];
   room.status = 'closed';
   room.updatedAt = now();
@@ -307,7 +358,8 @@ const routes = {
   },
 
   'GET /rooms/get': async (_req, res, url) => {
-    const room = findRoom({ roomId: url.searchParams.get('roomId'), code: url.searchParams.get('code') });
+    const allowClosed = url.searchParams.get('includeClosed') === '1';
+    const room = findRoom({ roomId: url.searchParams.get('roomId'), code: url.searchParams.get('code') }, allowClosed);
     json(res, 200, { ok: true, room: publicRoom(room) });
   },
 
@@ -381,6 +433,17 @@ const routes = {
     const id = playerId(body.playerId);
     const room = findRoom({ roomId: body.roomId || state.playerRoom[id], code: body.code });
     finishRoom(room, id);
+    saveState();
+    json(res, 200, { ok: true, room: publicRoom(room) });
+  },
+
+  'POST /internal/match-result': async (req, res) => {
+    if (!secretMatches(resultSecret, req.headers['x-match-result-secret'])) {
+      return json(res, 403, { ok: false, error: 'invalid_match_result_secret' });
+    }
+    const body = await readJson(req);
+    const room = findRoom({ roomId: body.roomId }, true);
+    persistMatchResult(room, body);
     saveState();
     json(res, 200, { ok: true, room: publicRoom(room) });
   },
