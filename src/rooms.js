@@ -239,7 +239,18 @@ function startRoom(room, actorId, { force = false } = {}) {
   const matchId = randomUUID();
   const expiresAt = Date.now() + 10 * 60 * 1000;
   const players = room.members.map((member) => member.playerId);
-  const token = signHandoff({ matchId, roomId: room.id, players, exp: expiresAt });
+  const teams = Object.fromEntries(room.members.map((member) => [member.playerId, Number(member.team || 1)]));
+  const preset = getModePreset(room.mode);
+  const targetRounds = preset?.family === 'clash_squad' ? 4 : 1;
+  const token = signHandoff({
+    matchId,
+    roomId: room.id,
+    players,
+    teams,
+    mode: room.mode,
+    targetRounds,
+    exp: expiresAt
+  });
 
   room.status = 'in_match';
   room.updatedAt = now();
