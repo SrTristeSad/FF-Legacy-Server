@@ -11,10 +11,30 @@ async function post(path, body) {
     body: JSON.stringify(body)
   });
   const data = await response.json();
-  if (!response.ok || data.ok === false) {
-    throw new Error(`${path} -> ${response.status} ${JSON.stringify(data)}`);
-  }
+  if (!response.ok || data.ok === false) throw new Error(`${path} -> ${response.status} ${JSON.stringify(data)}`);
   return data;
+}
+
+async function get(path) {
+  const response = await fetch(`${roomsBase}${path}`);
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(`${path} -> ${response.status} ${JSON.stringify(data)}`);
+  return data;
+}
+
+async function waitForPersistedResult(roomId, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    try {
+      last = await get(`/rooms/get?roomId=${encodeURIComponent(roomId)}&includeClosed=1`);
+      if (last.room?.status === 'closed' && last.room?.result?.matchId) return last.room;
+    } catch (error) {
+      last = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`persisted match result timeout: ${last instanceof Error ? last.message : JSON.stringify(last)}`);
 }
 
 function makeSocket() {
@@ -31,7 +51,6 @@ function udpWait(socket, accept, label = 'UDP event', timeoutMs = 3000) {
       socket.off('message', onMessage);
       reject(new Error(`UDP timeout waiting for ${label}`));
     }, timeoutMs);
-
     function onMessage(buffer) {
       const text = buffer.toString('utf8').trim();
       if (!accept(text)) return;
@@ -39,7 +58,6 @@ function udpWait(socket, accept, label = 'UDP event', timeoutMs = 3000) {
       socket.off('message', onMessage);
       resolve(text);
     }
-
     socket.on('message', onMessage);
   });
 }
@@ -64,20 +82,11 @@ let reconnectSocket;
 
 try {
   console.log('[1/11] create 1v1 Clash Squad room');
-  const created = await post('/rooms/create', {
-    playerId: ownerId,
-    nickname: 'GameplayOwner',
-    mode: 'clash_squad',
-    maxPlayers: 2
-  });
+  const created = await post('/rooms/create', { playerId: ownerId, nickname: 'GameplayOwner', mode: 'clash_squad', maxPlayers: 2 });
   roomId = created.room.id;
 
   console.log('[2/11] join opponent and ready');
-  await post('/rooms/join', {
-    roomId,
-    playerId: opponentId,
-    nickname: 'GameplayOpponent'
-  });
+  await post('/rooms/join', { roomId, playerId: opponentId, nickname: 'GameplayOpponent' });
   await post('/rooms/ready', { roomId, playerId: opponentId, ready: true });
 
   console.log('[3/11] start room and obtain handoff');
@@ -91,7 +100,6 @@ try {
   console.log('[4/11] authenticate both UDP clients');
   const welcomeA = await udpRequest(ownerSocket, `HELLO ${handoff.token} ${ownerId}\n`, (text) => text.startsWith('WELCOME '));
   if (welcomeA !== `WELCOME ${handoff.id}`) throw new Error(`owner welcome mismatch: ${welcomeA}`);
-
   const joinEvent = udpWait(ownerSocket, (text) => text === `EVENT JOIN ${opponentId}`, 'opponent join event');
   const welcomeB = await udpRequest(opponentSocket, `HELLO ${handoff.token} ${opponentId}\n`, (text) => text.startsWith('WELCOME '));
   if (welcomeB !== `WELCOME ${handoff.id}`) throw new Error(`opponent welcome mismatch: ${welcomeB}`);
@@ -140,16 +148,21 @@ try {
   const finalState = parseJsonReply(finalText, 'STATE ');
   if (finalState.status !== 'finished') throw new Error(`match not finished: ${finalText}`);
   if (Number(finalState.score?.[String(owner.team)] || 0) !== 4) throw new Error(`final score invalid: ${finalText}`);
-  if (finalState.players?.[ownerId]?.kills !== 4 || finalState.players?.[opponentId]?.deaths !== 4) {
-    throw new Error(`kill/death counters invalid: ${finalText}`);
-  }
+  if (finalState.players?.[ownerId]?.kills !== 4 || finalState.players?.[opponentId]?.deaths !== 4) throw new Error(`kill/death counters invalid: ${finalText}`);
 
   console.log('[10/11] reject gameplay after match finish');
   const rejectedMove = await udpRequest(ownerSocket, 'MOVE 6 0 3\n', (text) => text.startsWith('ERR '));
   if (rejectedMove !== 'ERR match_not_active') throw new Error(`unexpected post-match reply: ${rejectedMove}`);
 
-  console.log('[11/11] close room');
-  await post('/rooms/finish', { roomId, playerId: ownerId });
+  console.log('[11/11] verify automatic room close and persisted result');
+  const closed = await waitForPersistedResult(roomId);
+  if (closed.result?.matchId !== handoff.id) throw new Error(`persisted match id mismatch: ${JSON.stringify(closed.result)}`);
+  if (Number(closed.result?.winnerTeam) !== Number(owner.team)) throw new Error(`persisted winner mismatch: ${JSON.stringify(closed.result)}`);
+  if (Number(closed.result?.score?.[String(owner.team)] || 0) !== 4) throw new Error(`persisted score mismatch: ${JSON.stringify(closed.result)}`);
+  const ownerResult = closed.result?.players?.find((entry) => entry.playerId === ownerId);
+  const opponentResult = closed.result?.players?.find((entry) => entry.playerId === opponentId);
+  if (ownerResult?.kills !== 4 || opponentResult?.deaths !== 4) throw new Error(`persisted player stats mismatch: ${JSON.stringify(closed.result)}`);
+
   console.log('gameplay smoke test: OK');
 } finally {
   ownerSocket?.close();
