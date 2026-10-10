@@ -8,6 +8,7 @@ node scripts/smoke-lobby.mjs
 node scripts/smoke-clan.mjs
 node scripts/smoke-rooms.mjs
 node scripts/smoke-match.mjs
+node scripts/smoke-economy.mjs
 node scripts/smoke-gameplay.mjs
 node scripts/smoke-revive.mjs
 
