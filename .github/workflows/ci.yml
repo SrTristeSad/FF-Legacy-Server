@@ -31,6 +31,7 @@ jobs:
           node --check src/gateway.js
           node --check scripts/smoke-rooms.mjs
           node --check scripts/smoke-match.mjs
+          node --check scripts/smoke-economy.mjs
           node --check scripts/smoke-gameplay.mjs
           node --check scripts/smoke-revive.mjs
           node --check scripts/smoke-session.mjs
