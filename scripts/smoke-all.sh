@@ -3,6 +3,7 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
+node scripts/smoke-live.mjs
 node scripts/smoke-session.mjs
 node scripts/smoke-lobby.mjs
 node scripts/smoke-clan.mjs
