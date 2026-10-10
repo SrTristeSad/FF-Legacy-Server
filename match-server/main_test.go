@@ -240,3 +240,101 @@ func TestSecondHitEliminatesDownedPlayer(t *testing.T) {
 		t.Fatal("round should continue while a2 is standing")
 	}
 }
+
+func TestBuyWeaponDebitsCreditsAndEquips(t *testing.T) {
+	match := testMatch(4)
+	player := match.Players["a"]
+	player.Credits = 2500
+	player.Loadout = starterCombatLoadout()
+	result, err := buyCombatItem(match, "a", "weapon.rifle", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Credits != 700 || player.Credits != 700 {
+		t.Fatalf("unexpected credits after purchase: result=%#v player=%#v", result, player)
+	}
+	if player.Loadout.Weapon != "weapon.rifle" || player.Loadout.Ammo["rifle"] != 60 {
+		t.Fatalf("weapon purchase did not equip/grant ammo: %#v", player.Loadout)
+	}
+}
+
+func TestBuyRejectsInsufficientCredits(t *testing.T) {
+	match := testMatch(4)
+	player := match.Players["a"]
+	player.Credits = 100
+	player.Loadout = starterCombatLoadout()
+	if _, err := buyCombatItem(match, "a", "weapon.sniper", 1); err == nil || err.Error() != "insufficient_credits" {
+		t.Fatalf("expected insufficient_credits, got %v", err)
+	}
+}
+
+func TestFireConsumesAmmoAndUsesServerDamage(t *testing.T) {
+	match := testMatch(4)
+	attacker := match.Players["a"]
+	attacker.Credits = 2500
+	attacker.Loadout = starterCombatLoadout()
+	if _, err := buyCombatItem(match, "a", "weapon.rifle", 1); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fireWeapon(match, "a", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hit.Damage != 40 || match.Players["b"].Health != 160 {
+		t.Fatalf("server weapon damage mismatch: %#v target=%#v", result, match.Players["b"])
+	}
+	if result.AmmoRemaining != 59 || attacker.Loadout.Ammo["rifle"] != 59 {
+		t.Fatalf("ammo not consumed correctly: %#v", result)
+	}
+}
+
+func TestVestMitigatesDamageAndConsumesDurability(t *testing.T) {
+	match := testMatch(4)
+	target := match.Players["b"]
+	target.Credits = 2500
+	target.Loadout = starterCombatLoadout()
+	if _, err := buyCombatItem(match, "b", "armor.vest1", 1); err != nil {
+		t.Fatal(err)
+	}
+	result, err := applyHit(match, "a", "b", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Damage != 80 || target.Health != 120 || target.Loadout.VestDurability != 80 {
+		t.Fatalf("vest mitigation mismatch: result=%#v target=%#v", result, target)
+	}
+}
+
+func TestMedkitPurchaseAndUse(t *testing.T) {
+	match := testMatch(4)
+	player := match.Players["a"]
+	player.Credits = 2500
+	player.Loadout = starterCombatLoadout()
+	if _, err := buyCombatItem(match, "a", "utility.medkit", 1); err != nil {
+		t.Fatal(err)
+	}
+	player.Health = 100
+	result, err := useCombatItem(match, "a", "utility.medkit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Health != 150 || result.Remaining != 0 || player.Health != 150 {
+		t.Fatalf("medkit use mismatch: result=%#v player=%#v", result, player)
+	}
+}
+
+func TestRoundAndKillCreditsAreAwarded(t *testing.T) {
+	match := testMatch(4)
+	match.Players["a"].Credits = 0
+	match.Players["b"].Credits = 0
+	result, err := applyHit(match, "a", "b", 200)
+	if err != nil || !result.RoundEnded {
+		t.Fatalf("round should end: result=%#v err=%v", result, err)
+	}
+	if match.Players["a"].Credits != 1200 {
+		t.Fatalf("winner should receive kill+round credits, got %d", match.Players["a"].Credits)
+	}
+	if match.Players["b"].Credits != 600 {
+		t.Fatalf("loser round credits mismatch, got %d", match.Players["b"].Credits)
+	}
+}
