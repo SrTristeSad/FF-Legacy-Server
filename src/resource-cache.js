@@ -5,6 +5,7 @@ import https from 'node:https';
 
 const cacheRoot = path.resolve(process.env.RESOURCE_CACHE_DIR || '/resource-cache');
 const originBase = new URL(process.env.RESOURCE_ORIGIN_BASE || 'https://freefiremobile-a.akamaihd.net');
+const allowOriginFetch = String(process.env.RESOURCE_MIRROR_MODE || 'local').trim().toLowerCase() === 'mirror';
 
 function mapOriginPath(pathname) {
   let mapped = String(pathname || '');
@@ -204,6 +205,11 @@ export function createResourceCacheHandler() {
       return true;
     }
 
+    if (!allowOriginFetch) {
+      console.log(`[resources] LOCAL-MISS ${originPath}`);
+      return false;
+    }
+
     const originUrl = new URL(originPath + (url.search || ''), originBase);
     console.log(`[resources] MISS ${originPath} -> ${originUrl.href}`);
     await requestOrigin(originUrl, req, res, filePath);
@@ -214,6 +220,7 @@ export function createResourceCacheHandler() {
 export function resourceCacheInfo() {
   return {
     cacheRoot,
-    origin: originBase.origin
+    origin: originBase.origin,
+    allowOriginFetch
   };
 }
