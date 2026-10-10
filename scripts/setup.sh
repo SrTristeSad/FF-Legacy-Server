@@ -29,6 +29,12 @@ if grep -q '^MATCH_RESULT_SECRET=dev-change-me-result$' .env; then
   echo "Generated MATCH_RESULT_SECRET"
 fi
 
+if grep -q '^ADMIN_PASSWORD=dev-change-me-admin$' .env; then
+  secret="$(generate_secret admin | cut -c1-24)"
+  sed -i "s/^ADMIN_PASSWORD=dev-change-me-admin$/ADMIN_PASSWORD=${secret}/" .env
+  echo "Generated ADMIN_PASSWORD"
+fi
+
 if [ "$created_env" = true ]; then
   echo "Created .env from .env.example"
 else
