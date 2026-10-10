@@ -46,8 +46,10 @@ type playerState struct {
 	Health    int    `json:"health"`
 	MaxHealth int    `json:"maxHealth"`
 	Alive     bool   `json:"alive"`
+	Downed    bool   `json:"downed"`
 	Kills     int    `json:"kills"`
 	Deaths    int    `json:"deaths"`
+	Revives   int    `json:"revives"`
 	Connected bool   `json:"connected"`
 	LastSeen  int64  `json:"lastSeen"`
 }
@@ -67,14 +69,21 @@ type matchState struct {
 }
 
 type hitResult struct {
-	AttackerID string `json:"attackerId"`
-	TargetID   string `json:"targetId"`
-	Damage     int    `json:"damage"`
-	Health     int    `json:"health"`
-	Killed     bool   `json:"killed"`
-	RoundEnded bool   `json:"roundEnded"`
-	RoundWinner int   `json:"roundWinner,omitempty"`
-	MatchEnded bool   `json:"matchEnded"`
+	AttackerID  string `json:"attackerId"`
+	TargetID    string `json:"targetId"`
+	Damage      int    `json:"damage"`
+	Health      int    `json:"health"`
+	Downed      bool   `json:"downed"`
+	Killed      bool   `json:"killed"`
+	RoundEnded  bool   `json:"roundEnded"`
+	RoundWinner int    `json:"roundWinner,omitempty"`
+	MatchEnded  bool   `json:"matchEnded"`
+}
+
+type reviveResult struct {
+	ReviverID string `json:"reviverId"`
+	TargetID  string `json:"targetId"`
+	Health    int    `json:"health"`
 }
 
 func main() {
@@ -220,13 +229,13 @@ func getOrCreateMatch(matches *sync.Map, handoff *handoffPayload) *matchState {
 			}
 		}
 		match.Players[id] = &playerState{
-			PlayerID: id,
-			Team: team,
-			Position: spawnForTeam(team, index),
-			Health: 200,
+			PlayerID:  id,
+			Team:      team,
+			Position:  spawnForTeam(team, index),
+			Health:    200,
 			MaxHealth: 200,
-			Alive: true,
-			LastSeen: now,
+			Alive:     true,
+			LastSeen:  now,
 		}
 	}
 
@@ -279,6 +288,16 @@ func handleCommand(match *matchState, playerID, raw string) (string, string) {
 		}
 		body, _ := json.Marshal(result)
 		return "OK HIT " + string(body), "EVENT HIT " + string(body)
+	case "REVIVE":
+		if len(fields) != 2 {
+			return "ERR malformed_revive", ""
+		}
+		result, err := revivePlayer(match, playerID, fields[1])
+		if err != nil {
+			return "ERR " + err.Error(), ""
+		}
+		body, _ := json.Marshal(result)
+		return "OK REVIVE " + string(body), "EVENT REVIVE " + string(body)
 	case "LEAVE":
 		match.mu.Lock()
 		if player := match.Players[playerID]; player != nil {
@@ -306,6 +325,9 @@ func movePlayer(match *matchState, playerID string, next vec3) (vec3, error) {
 	if !player.Alive {
 		return vec3{}, fmt.Errorf("player_dead")
 	}
+	if player.Downed {
+		return vec3{}, fmt.Errorf("player_downed")
+	}
 	if distance(player.Position, next) > 120 {
 		return vec3{}, fmt.Errorf("movement_too_large")
 	}
@@ -332,6 +354,9 @@ func applyHit(match *matchState, attackerID, targetID string, damage int) (hitRe
 	if !attacker.Alive {
 		return hitResult{}, fmt.Errorf("attacker_dead")
 	}
+	if attacker.Downed {
+		return hitResult{}, fmt.Errorf("attacker_downed")
+	}
 	if !target.Alive {
 		return hitResult{}, fmt.Errorf("target_dead")
 	}
@@ -339,24 +364,36 @@ func applyHit(match *matchState, attackerID, targetID string, damage int) (hitRe
 		return hitResult{}, fmt.Errorf("friendly_fire_disabled")
 	}
 
+	wasDowned := target.Downed
 	if damage > target.Health {
 		damage = target.Health
 	}
 	target.Health -= damage
 	result := hitResult{AttackerID: attackerID, TargetID: targetID, Damage: damage, Health: target.Health}
+
 	if target.Health <= 0 {
-		target.Health = 0
-		target.Alive = false
-		target.Deaths++
-		attacker.Kills++
-		result.Killed = true
+		if !wasDowned && strings.Contains(match.Mode, "clash_squad") && hasStandingTeammateLocked(match, target.Team, targetID) {
+			target.Health = 1
+			target.Downed = true
+			result.Health = 1
+			result.Downed = true
+		} else {
+			target.Health = 0
+			target.Downed = false
+			target.Alive = false
+			target.Deaths++
+			attacker.Kills++
+			result.Health = 0
+			result.Killed = true
+		}
 	}
+
 	now := time.Now().UnixMilli()
 	attacker.LastSeen = now
 	target.LastSeen = now
 	match.UpdatedAt = now
 
-	if result.Killed {
+	if result.Killed || result.Downed {
 		ended, winner, finished := evaluateRoundLocked(match)
 		result.RoundEnded = ended
 		result.RoundWinner = winner
@@ -365,21 +402,70 @@ func applyHit(match *matchState, attackerID, targetID string, damage int) (hitRe
 	return result, nil
 }
 
-func evaluateRoundLocked(match *matchState) (bool, int, bool) {
-	allTeams := map[int]bool{}
-	aliveTeams := map[int]bool{}
-	for _, player := range match.Players {
-		allTeams[player.Team] = true
-		if player.Alive {
-			aliveTeams[player.Team] = true
+func revivePlayer(match *matchState, reviverID, targetID string) (reviveResult, error) {
+	match.mu.Lock()
+	defer match.mu.Unlock()
+	if match.Status != "active" {
+		return reviveResult{}, fmt.Errorf("match_not_active")
+	}
+	reviver := match.Players[reviverID]
+	target := match.Players[targetID]
+	if reviver == nil || target == nil {
+		return reviveResult{}, fmt.Errorf("player_not_in_match")
+	}
+	if reviverID == targetID {
+		return reviveResult{}, fmt.Errorf("self_revive_not_allowed")
+	}
+	if !reviver.Alive || reviver.Downed {
+		return reviveResult{}, fmt.Errorf("reviver_not_available")
+	}
+	if !target.Alive || !target.Downed {
+		return reviveResult{}, fmt.Errorf("target_not_downed")
+	}
+	if reviver.Team != target.Team {
+		return reviveResult{}, fmt.Errorf("target_not_teammate")
+	}
+	if distance(reviver.Position, target.Position) > 6 {
+		return reviveResult{}, fmt.Errorf("target_too_far")
+	}
+
+	target.Downed = false
+	target.Health = 50
+	reviver.Revives++
+	now := time.Now().UnixMilli()
+	reviver.LastSeen = now
+	target.LastSeen = now
+	match.UpdatedAt = now
+	return reviveResult{ReviverID: reviverID, TargetID: targetID, Health: target.Health}, nil
+}
+
+func hasStandingTeammateLocked(match *matchState, team int, exceptID string) bool {
+	for id, player := range match.Players {
+		if id == exceptID || player.Team != team {
+			continue
+		}
+		if player.Alive && !player.Downed {
+			return true
 		}
 	}
-	if len(allTeams) < 2 || len(aliveTeams) != 1 {
+	return false
+}
+
+func evaluateRoundLocked(match *matchState) (bool, int, bool) {
+	allTeams := map[int]bool{}
+	standingTeams := map[int]bool{}
+	for _, player := range match.Players {
+		allTeams[player.Team] = true
+		if player.Alive && !player.Downed {
+			standingTeams[player.Team] = true
+		}
+	}
+	if len(allTeams) < 2 || len(standingTeams) != 1 {
 		return false, 0, false
 	}
 
 	winner := 0
-	for team := range aliveTeams {
+	for team := range standingTeams {
 		winner = team
 	}
 	match.Score[winner]++
@@ -394,6 +480,7 @@ func evaluateRoundLocked(match *matchState) (bool, int, bool) {
 	for _, player := range match.Players {
 		player.Health = player.MaxHealth
 		player.Alive = true
+		player.Downed = false
 		player.Position = spawnForTeam(player.Team, spawnIndex)
 		spawnIndex++
 	}
